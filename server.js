@@ -1,4 +1,5 @@
 import express from 'express'
+import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -11,8 +12,22 @@ const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || path.join(os.homedir(), '
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
 const DIST_DIR = path.join(process.cwd(), 'dist')
 
+// ─── Safe helpers ────────────────────────────────────────────────
+
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function safeExec(cmd) {
+  try {
+    return execSync(cmd, { timeout: 3000, encoding: 'utf8' }).trim()
+  } catch {
+    return null
+  }
 }
 
 function redactEmail(email) {
@@ -20,6 +35,141 @@ function redactEmail(email) {
   const [name, domain] = email.split('@')
   return `${name.slice(0, 3)}***@${domain}`
 }
+
+// ─── CPU ─────────────────────────────────────────────────────────
+
+function readCpuStat() {
+  const stat = fs.readFileSync('/proc/stat', 'utf8')
+  const line = stat.split('\n').find(l => l.startsWith('cpu '))
+  if (!line) return null
+  const parts = line.trim().split(/\s+/).slice(1).map(Number)
+  const total = parts.reduce((a, b) => a + b, 0)
+  const idle = (parts[3] || 0)
+  return { total, idle }
+}
+
+function calcCpuUsage() {
+  const a = readCpuStat()
+  if (!a) return null
+  // small busy-wait to sample delta
+  const start = Date.now()
+  while (Date.now() - start < 150) {
+    /* spin — 150ms is enough for a useful delta */
+  }
+  const b = readCpuStat()
+  if (!b) return null
+  const totalDelta = b.total - a.total
+  const idleDelta = b.idle - a.idle
+  if (totalDelta <= 0) return 0
+  return Math.round(((totalDelta - idleDelta) / totalDelta) * 100 * 10) / 10
+}
+
+// ─── Temperature ─────────────────────────────────────────────────
+
+function readTemperatures() {
+  const zones = fs.readdirSync('/sys/class/thermal')
+    .filter(n => n.startsWith('thermal_zone'))
+    .map(name => {
+      try {
+        const type = fs.readFileSync(`/sys/class/thermal/${name}/type`, 'utf8').trim()
+        const raw = Number(fs.readFileSync(`/sys/class/thermal/${name}/temp`, 'utf8').trim())
+        return { name: type || name, temp: Math.round(raw / 100) / 10 }
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+
+  // Also try sensors command for more data
+  const sensorsOut = safeExec('sensors -u 2>/dev/null | grep -E "^temp[0-9]+_input" | head -5')
+  if (sensorsOut) {
+    sensorsOut.split('\n').forEach(line => {
+      const val = Number(line.split(':')[1]?.trim())
+      if (val && val > 0) zones.push({ name: 'sensor', temp: Math.round(val * 10) / 10 })
+    })
+  }
+
+  return zones
+}
+
+// ─── System metrics (disk / RAM / uptime) ─────────────────────────
+
+function collectPcMetrics() {
+  const memTotal = os.totalmem()
+  const memFree = os.freemem()
+  const memUsed = memTotal - memFree
+  const memPercent = Math.round((memUsed / memTotal) * 100)
+
+  const cpus = os.cpus()
+  const cpuModel = cpus.length ? cpus[0].model.trim() : 'desconhecido'
+  const cpuCores = cpus.length
+  const cpuUsage = calcCpuUsage()
+  const loadAvg = os.loadavg()
+
+  const disks = []
+  const diskInfo = safeExec("df -B1 --output=source,fstype,size,used,avail,pcent,target 2>/dev/null | tail -n +2")
+  if (diskInfo) {
+    diskInfo.split('\n').forEach(line => {
+      if (!line.trim()) return
+      // Extract columns from the right (target is the only field with spaces)
+      const pcentMatch = line.match(/(\S+)\s+(\/.*)$/)
+      if (!pcentMatch) return
+      const before = line.slice(0, pcentMatch.index).trim()
+      const pcent = pcentMatch[1]
+      const mount = pcentMatch[2].trim()
+      const cols = before.split(/\s+/)
+      if (cols.length < 5) return
+      const [device, fsType, size, used, avail] = cols
+      // Only real disks (skip tmpfs, overlay, devtmpfs, squashfs, fuse)
+      if (!/^(ext[234]|ntfs|fuseblk|btrfs|xfs|zfs|f2fs|vfat|exfat)$/.test(fsType)) return
+      // Skip some non-physical mounts
+      if (/^\/(proc|sys|dev|run|tmp)\b/.test(mount)) return
+      // Skip small EFI/boot partitions
+      if (/^\/(boot|boot\/efi)\b/.test(mount)) return
+      disks.push({
+        device,
+        fsType,
+        mount,
+        sizeGb: +(Number(size) / 1073741824).toFixed(1),
+        usedGb: +(Number(used) / 1073741824).toFixed(1),
+        freeGb: +(Number(avail) / 1073741824).toFixed(1),
+        percent: pcent,
+        label: mount === '/' ? 'SSD (sistema)' : mount.includes('HD Backup') ? 'HDD (Backup)' : mount,
+      })
+    })
+  }
+
+  const temps = readTemperatures()
+  const temp = temps.length > 0
+    ? { max: Math.max(...temps.map(t => t.temp)), sensors: temps }
+    : null
+
+  const uptime = os.uptime()
+
+  return {
+    cpu: {
+      model: cpuModel,
+      cores: cpuCores,
+      usagePercent: cpuUsage,
+      loadAvg: loadAvg.map(v => Math.round(v * 100) / 100),
+    },
+    memory: {
+      totalBytes: memTotal,
+      usedBytes: memUsed,
+      freeBytes: memFree,
+      usedPercent: memPercent,
+      // friendly formatting helpers
+      totalGb: +(memTotal / 1073741824).toFixed(1),
+      usedGb: +(memUsed / 1073741824).toFixed(1),
+      freeGb: +(memFree / 1073741824).toFixed(1),
+    },
+    disks,
+    temperature: temp,
+    uptime,
+  }
+}
+
+// ─── Codex API ────────────────────────────────────────────────────
 
 async function fetchCodexUsage() {
   const auth = readJson(CODEX_AUTH_PATH)
@@ -153,6 +303,32 @@ app.get('/api/limits', async (_req, res) => {
   }
 })
 
+app.get('/api/pc-metrics', (_req, res) => {
+  try {
+    const metrics = collectPcMetrics()
+    res.json({ ok: true, checkedAt: new Date().toISOString(), metrics })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+// ─── Error handling middleware ──────────────────────────────────
+
+app.use((err, _req, res, _next) => {
+  console.error('[Painel] Erro nao tratado:', err)
+  res.status(500).json({ error: 'Erro interno do servidor', checkedAt: new Date().toISOString() })
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('[Painel] Uncaught exception — processo continua vivo:', err)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Painel] Unhandled rejection — processo continua vivo:', reason)
+})
+
+// ─── Static file server ─────────────────────────────────────────
+
 function startStaticServer() {
   if (!fs.existsSync(DIST_DIR)) {
     console.warn('dist/ nao encontrado. Rode npm run build antes de publicar o painel.')
@@ -160,16 +336,36 @@ function startStaticServer() {
   }
 
   const staticApp = express()
-  staticApp.use(express.static(DIST_DIR))
+  staticApp.use(express.static(DIST_DIR, {
+    index: 'index.html',
+    maxAge: '1h',
+    etag: true,
+  }))
   staticApp.get(/.*/, (_req, res) => {
-    res.sendFile(path.join(DIST_DIR, 'index.html'))
+    const filePath = path.join(DIST_DIR, 'index.html')
+    if (fs.existsSync(filePath)) {
+      res.sendFile(filePath)
+    } else {
+      res.status(404).send('Pagina nao encontrada')
+    }
+  })
+  staticApp.use((err, _req, res, _next) => {
+    console.error('[Painel-http] Erro no servidor estatico:', err)
+    res.status(500).send('Erro interno do servidor')
   })
   staticApp.listen(SITE_PORT, '127.0.0.1', () => {
     console.log(`Painel de limites site em http://127.0.0.1:${SITE_PORT}`)
   })
 }
 
-app.listen(API_PORT, '127.0.0.1', () => {
+// ─── Graceful startup ───────────────────────────────────────────
+
+const server = app.listen(API_PORT, '127.0.0.1', () => {
   console.log(`Painel de limites API em http://127.0.0.1:${API_PORT}`)
   startStaticServer()
+})
+
+// PM2 handles restart — just clean up, don't fight it
+process.on('SIGINT', () => {
+  server.close(() => process.exit(0))
 })

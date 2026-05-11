@@ -33,6 +33,18 @@ type LimitsPayload = {
   }
 }
 
+type PcMetricsPayload = {
+  ok: boolean
+  checkedAt: string
+  metrics: {
+    cpu: { model: string; cores: number; usagePercent: number | null; loadAvg: number[] }
+    memory: { totalGb: number; usedGb: number; freeGb: number; usedPercent: number }
+    disks: Array<{ device: string; mount: string; label: string; sizeGb: number; usedGb: number; freeGb: number; percent: string }>
+    temperature: { max: number; sensors: Array<{ name: string; temp: number }> } | null
+    uptime: number
+  }
+}
+
 const numberFmt = new Intl.NumberFormat('pt-BR')
 const percentFmt = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 })
 
@@ -47,6 +59,19 @@ function formatDuration(seconds: number) {
   return `${minutes}min`
 }
 
+function formatUptime(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds || 0))
+  const days = Math.floor(safe / 86400)
+  const hours = Math.floor((safe % 86400) / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+
+  const parts = []
+  if (days > 0) parts.push(`${days}d`)
+  if (hours > 0) parts.push(`${hours}h`)
+  parts.push(`${minutes}min`)
+  return parts.join(' ')
+}
+
 function formatDate(value?: string | number | null) {
   if (!value) return 'Sem dados'
   const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value)
@@ -55,8 +80,11 @@ function formatDate(value?: string | number | null) {
 
 function App() {
   const [data, setData] = useState<LimitsPayload | null>(null)
+  const [pcData, setPcData] = useState<PcMetricsPayload['metrics'] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [pcError, setPcError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [pcLoading, setPcLoading] = useState(true)
 
   async function loadLimits() {
     try {
@@ -72,9 +100,29 @@ function App() {
     }
   }
 
+  async function loadPcMetrics() {
+    try {
+      setPcError(null)
+      const response = await fetch('/api/pc-metrics')
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Falha ao consultar metricas')
+      setPcData(payload.metrics)
+    } catch (err) {
+      setPcError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setPcLoading(false)
+    }
+  }
+
   useEffect(() => {
-    const initialLoad = window.setTimeout(loadLimits, 0)
-    const timer = window.setInterval(loadLimits, 60_000)
+    const initialLoad = window.setTimeout(() => {
+      loadLimits()
+      loadPcMetrics()
+    }, 0)
+    const timer = window.setInterval(() => {
+      loadLimits()
+      loadPcMetrics()
+    }, 60_000)
     return () => {
       window.clearTimeout(initialLoad)
       window.clearInterval(timer)
@@ -109,7 +157,7 @@ function App() {
             <span>Conta: {data?.usage.account.email || 'Carregando...'}</span>
             <span>Plano: {data?.usage.account.planType || '-'}</span>
             <button
-              onClick={loadLimits}
+              onClick={() => { loadLimits(); loadPcMetrics() }}
               className="w-full rounded-xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 transition hover:bg-cyan-200 sm:w-auto sm:py-2"
               type="button"
             >
@@ -120,10 +168,11 @@ function App() {
 
         {error && (
           <section className="rounded-3xl border border-red-400/30 bg-red-500/10 p-5 text-red-100">
-            <strong>Erro ao carregar:</strong> {error}
+            <strong>Erro ao carregar limites:</strong> {error}
           </section>
         )}
 
+        {/* ─── Codex Limits ─── */}
         <section className="grid gap-5 lg:grid-cols-[1.35fr_0.65fr]">
           <LimitHero window={primary} loading={loading} />
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
@@ -183,8 +232,158 @@ function App() {
             </div>
           </section>
         </section>
+
+        {/* ─── PC Metrics ─── */}
+        <section>
+          <div className="mb-5 flex items-center gap-4">
+            <h2 className="text-2xl font-black text-white">📊 Metricas deste PC</h2>
+            <span className="text-xs text-slate-500">
+              {pcData ? `atualizado ${formatDate(new Date().toISOString())}` : ''}
+            </span>
+          </div>
+
+          {pcError && (
+            <section className="mb-5 rounded-3xl border border-red-400/30 bg-red-500/10 p-5 text-red-100">
+              <strong>Erro ao carregar metricas:</strong> {pcError}
+            </section>
+          )}
+
+          {pcLoading && !pcData && (
+            <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-8 text-center text-slate-400">
+              Carregando metricas do sistema...
+            </div>
+          )}
+
+          {pcData && (
+            <>
+              {/* CPU + RAM + Uptime row */}
+              <section className="mb-5 grid gap-5 lg:grid-cols-3">
+                <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 sm:p-6">
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="text-2xl">⚡</span>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">CPU</h3>
+                      <p className="text-xs text-slate-400">{pcData.cpu.model}</p>
+                    </div>
+                  </div>
+                  <div className="mt-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm text-slate-400">Uso</span>
+                      <span className="text-xl font-black text-white">
+                        {pcData.cpu.usagePercent !== null ? `${pcData.cpu.usagePercent}%` : '--'}
+                      </span>
+                    </div>
+                    <Bar value={pcData.cpu.usagePercent ?? 0} color="from-cyan-300 to-purple-400" />
+                  </div>
+                  <div className="mt-4 space-y-2 text-sm text-slate-300">
+                    <Row label="Nucleos" value={String(pcData.cpu.cores)} />
+                    <Row label="Load (1/5/15m)" value={pcData.cpu.loadAvg.join(' / ')} />
+                  </div>
+                </section>
+
+                <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 sm:p-6">
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="text-2xl">🧠</span>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">RAM</h3>
+                      <p className="text-xs text-slate-400">{pcData.memory.totalGb}GB DDR3?</p>
+                    </div>
+                  </div>
+                  <div className="mb-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm text-slate-400">Uso</span>
+                      <span className="text-xl font-black text-white">{pcData.memory.usedPercent}%</span>
+                    </div>
+                    <Bar value={pcData.memory.usedPercent} color="from-emerald-300 to-cyan-400" />
+                  </div>
+                  <div className="space-y-2 text-sm text-slate-300">
+                    <Row label="Usado" value={`${pcData.memory.usedGb}GB`} />
+                    <Row label="Livre" value={`${pcData.memory.freeGb}GB`} />
+                  </div>
+                </section>
+
+                <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 sm:p-6">
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="text-2xl">⏰</span>
+                    <div>
+                      <h3 className="text-lg font-bold text-white">Sistema</h3>
+                      <p className="text-xs text-slate-400">Uptime</p>
+                    </div>
+                  </div>
+                  <div className="mt-6">
+                    <div className="text-center">
+                      <div className="text-4xl font-black text-white">{formatUptime(pcData.uptime)}</div>
+                    </div>
+                  </div>
+                  {pcData.temperature && (
+                    <div className="mt-5 space-y-2 text-sm">
+                      <p className="text-sm text-slate-400">Temperatura</p>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-2xl font-black ${pcData.temperature.max > 70 ? 'text-red-400' : pcData.temperature.max > 50 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                          {pcData.temperature.max}°C
+                        </span>
+                        <span className="text-xs text-slate-500">max</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {pcData.temperature.sensors.filter(s => s.temp > 0).map((s, i) => (
+                          <span key={i} className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-slate-400">
+                            {s.name.replace(/_/g, ' ')}: {s.temp}°C
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              </section>
+
+              {/* Disks */}
+              <section className="grid gap-5 lg:grid-cols-2">
+                {pcData.disks.map((disk) => {
+                  const pct = parseInt(disk.percent)
+                  return (
+                    <section key={disk.mount} className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 sm:p-6">
+                      <div className="mb-4 flex items-center gap-3">
+                        <span className="text-2xl">{disk.label?.includes('HDD') ? '💾' : '💿'}</span>
+                        <div>
+                          <h3 className="text-lg font-bold text-white">{disk.label}</h3>
+                          <p className="text-xs text-slate-400">{disk.device} • {disk.sizeGb}GB</p>
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-sm text-slate-400">Uso</span>
+                          <span className={`text-xl font-black ${pct > 85 ? 'text-red-400' : pct > 65 ? 'text-amber-300' : 'text-white'}`}>
+                            {disk.percent}
+                          </span>
+                        </div>
+                        <Bar value={pct} color="from-violet-300 to-pink-400" />
+                      </div>
+                      <div className="space-y-2 text-sm text-slate-300">
+                        <Row label="Usado" value={`${disk.usedGb}GB`} />
+                        <Row label="Livre" value={`${disk.freeGb}GB`} />
+                      </div>
+                    </section>
+                  )
+                })}
+              </section>
+            </>
+          )}
+        </section>
       </div>
     </main>
+  )
+}
+
+// ─── Shared sub-components ───────────────────────────────────────
+
+function Bar({ value, color }: { value: number; color: string }) {
+  return (
+    <div className="h-3 overflow-hidden rounded-full bg-white/10">
+      <div
+        className={`h-full rounded-full bg-gradient-to-r ${color}`}
+        style={{ width: `${Math.max(2, Math.min(100, value))}%` }}
+      />
+    </div>
   )
 }
 
