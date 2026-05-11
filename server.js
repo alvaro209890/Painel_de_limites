@@ -5,9 +5,11 @@ import os from 'node:os'
 import Database from 'better-sqlite3'
 
 const app = express()
-const PORT = Number(process.env.LIMITS_PANEL_PORT || 8787)
+const API_PORT = Number(process.env.LIMITS_PANEL_PORT || 8787)
+const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
 const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || path.join(os.homedir(), '.codex', 'auth.json')
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
+const DIST_DIR = path.join(process.cwd(), 'dist')
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'))
@@ -151,6 +153,23 @@ app.get('/api/limits', async (_req, res) => {
   }
 })
 
-app.listen(PORT, () => {
-  console.log(`Painel de limites API em http://127.0.0.1:${PORT}`)
+function startStaticServer() {
+  if (!fs.existsSync(DIST_DIR)) {
+    console.warn('dist/ nao encontrado. Rode npm run build antes de publicar o painel.')
+    return
+  }
+
+  const staticApp = express()
+  staticApp.use(express.static(DIST_DIR))
+  staticApp.get(/.*/, (_req, res) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'))
+  })
+  staticApp.listen(SITE_PORT, '127.0.0.1', () => {
+    console.log(`Painel de limites site em http://127.0.0.1:${SITE_PORT}`)
+  })
+}
+
+app.listen(API_PORT, '127.0.0.1', () => {
+  console.log(`Painel de limites API em http://127.0.0.1:${API_PORT}`)
+  startStaticServer()
 })
