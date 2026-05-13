@@ -13,6 +13,8 @@ const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
 const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || path.join(os.homedir(), '.codex', 'auth.json')
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
 const DIST_DIR = path.join(process.cwd(), 'dist')
+const HERMES_AUTH_PATH = process.env.HERMES_AUTH_PATH || path.join(os.homedir(), '.hermes', 'auth.json')
+const HERMES_CODEX_PROVIDER_KEY = process.env.HERMES_CODEX_PROVIDER_KEY || 'openai-codex'
 const CODEX_PROFILES_ROOT = process.env.CODEX_PROFILES_ROOT || path.join(os.homedir(), '.config', 'codex-profiles')
 const CODEX_PROFILES_DIR = path.join(CODEX_PROFILES_ROOT, 'profiles')
 const CODEX_BACKUPS_DIR = path.join(CODEX_PROFILES_ROOT, 'backups')
@@ -787,9 +789,31 @@ function rotationStatusPayload() {
 
 // ─── Codex API ────────────────────────────────────────────────────
 
+async function fetchUsageWithToken({ accessToken, accountId = '', label = 'Codex' }) {
+  if (!accessToken) {
+    throw new Error(`${label} nao possui access_token salvo`)
+  }
+
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'User-Agent': 'Painel-de-limites/1.0',
+  }
+  if (accountId) headers['ChatGPT-Account-ID'] = accountId
+
+  const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { headers })
+
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Falha ao consultar uso do ${label}: HTTP ${response.status} ${text.slice(0, 160)}`)
+  }
+
+  return JSON.parse(text)
+}
+
 async function fetchCodexUsage(authPath = CODEX_AUTH_PATH) {
   const auth = readJson(authPath)
-  const tokens = auth.tokens || {}
+  const tokens = auth?.tokens || {}
   const accessToken = tokens.access_token
   const accountId = tokens.account_id
 
@@ -797,21 +821,43 @@ async function fetchCodexUsage(authPath = CODEX_AUTH_PATH) {
     throw new Error(`Codex nao esta logado em ${authPath}`)
   }
 
-  const response = await fetch('https://chatgpt.com/backend-api/wham/usage', {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'ChatGPT-Account-ID': accountId || '',
-      Accept: 'application/json',
-      'User-Agent': 'Painel-de-limites/1.0',
-    },
-  })
+  return fetchUsageWithToken({ accessToken, accountId, label: 'Codex CLI' })
+}
 
-  const text = await response.text()
-  if (!response.ok) {
-    throw new Error(`Falha ao consultar uso do Codex: HTTP ${response.status} ${text.slice(0, 160)}`)
+function readHermesCodexCredential() {
+  const auth = readJson(HERMES_AUTH_PATH)
+  const credentials = auth?.credential_pool?.[HERMES_CODEX_PROVIDER_KEY]
+  const credential = Array.isArray(credentials) ? credentials[0] : null
+  if (!credential?.access_token) return null
+  return credential
+}
+
+async function readHermesCodexSnapshot() {
+  const source = {
+    label: 'Hermes OpenAI Codex',
+    authPath: HERMES_AUTH_PATH,
+    provider: HERMES_CODEX_PROVIDER_KEY,
+    endpoint: 'https://chatgpt.com/backend-api/codex',
   }
-
-  return JSON.parse(text)
+  try {
+    const credential = readHermesCodexCredential()
+    if (!credential) {
+      return { ok: false, ...source, credentialLabel: null, error: 'Credencial openai-codex nao encontrada em ~/.hermes/auth.json' }
+    }
+    const raw = await fetchUsageWithToken({
+      accessToken: credential.access_token,
+      accountId: credential.account_id || '',
+      label: 'Hermes OpenAI Codex',
+    })
+    return {
+      ok: true,
+      ...source,
+      credentialLabel: credential.label || null,
+      usage: normalizeUsage(raw),
+    }
+  } catch (error) {
+    return { ok: false, ...source, credentialLabel: null, error: error.message, checkedAt: new Date().toISOString() }
+  }
 }
 
 function querySqlite(dbPath, sql) {
@@ -911,9 +957,12 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/limits', async (_req, res) => {
   try {
-    const usage = await fetchCodexUsage()
+    const [usage, hermesCodex] = await Promise.all([
+      fetchCodexUsage(),
+      readHermesCodexSnapshot(),
+    ])
     const local = readLocalMetrics()
-    res.json({ usage: normalizeUsage(usage), local })
+    res.json({ usage: normalizeUsage(usage), local, hermesCodex })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }

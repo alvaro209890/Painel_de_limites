@@ -11,21 +11,36 @@ type WindowInfo = {
   elapsedSeconds: number
 }
 
+type UsageInfo = {
+  checkedAt: string
+  account: { email: string | null; planType: string; userId: string }
+  status: { allowed: boolean; limitReached: boolean; reachedType: string | null }
+  windows: { primary: WindowInfo | null; secondary: WindowInfo | null }
+  credits: {
+    has_credits: boolean
+    unlimited: boolean
+    balance: string
+    overage_limit_reached: boolean
+    approx_local_messages?: [number, number]
+    approx_cloud_messages?: [number, number]
+  } | null
+}
+
+type HermesCodexPayload = {
+  ok: boolean
+  label: string
+  authPath: string
+  provider: string
+  endpoint: string
+  credentialLabel: string | null
+  usage?: UsageInfo
+  error?: string
+  checkedAt?: string
+}
+
 type LimitsPayload = {
-  usage: {
-    checkedAt: string
-    account: { email: string | null; planType: string; userId: string }
-    status: { allowed: boolean; limitReached: boolean; reachedType: string | null }
-    windows: { primary: WindowInfo | null; secondary: WindowInfo | null }
-    credits: {
-      has_credits: boolean
-      unlimited: boolean
-      balance: string
-      overage_limit_reached: boolean
-      approx_local_messages?: [number, number]
-      approx_cloud_messages?: [number, number]
-    } | null
-  }
+  usage: UsageInfo
+  hermesCodex?: HermesCodexPayload
   local: {
     totals: { threads: number; tokens: number; last_used: number | null }
     byModel: Array<{ model: string; provider: string; threads: number; tokens: number; last_used: number }>
@@ -158,6 +173,7 @@ function normalizeLimitsPayload(payload: Partial<LimitsPayload> | null): LimitsP
         reachedType: safeText(payload.usage.status?.reachedType, '') || null,
       },
     },
+    hermesCodex: payload.hermesCodex,
     local: {
       totals: {
         threads: safeNumber(local.totals?.threads),
@@ -579,6 +595,7 @@ function App() {
   const recentThreads = data?.local.recentThreads || []
   const primary = data?.usage.windows.primary
   const secondary = data?.usage.windows.secondary
+  const hermesCodex = data?.hermesCodex
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[#080a0f] text-slate-100">
@@ -594,7 +611,7 @@ function App() {
             </h1>
             <p className="mt-4 max-w-2xl text-sm text-slate-300 sm:text-lg">
               {tab === 'codex'
-                ? 'Acompanha a janela das proximas 5 horas, limite secundario, creditos e metricas locais por modelo usando o login do Codex neste PC.'
+                ? 'Separa o limite do Codex CLI (~/.codex/auth.json) do limite que o Hermes usa para responder aqui (~/.hermes/auth.json).'
                 : tab === 'deepseek'
                 ? 'Saldo disponivel na conta DeepSeek, historico de uso e status da API.'
                 : 'Monitoramento em tempo real de CPU, RAM, discos, temperatura e uptime deste servidor.'}
@@ -641,10 +658,12 @@ function App() {
               <LimitHero window={primary} loading={loading} />
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
                 <WeeklyLimitCard window={secondary} />
-                <MetricCard label="Tokens locais registrados" value={numberFmt.format(localTotals.tokens)} detail={`${numberFmt.format(localTotals.threads)} conversas no historico`} />
-                <MetricCard label="Creditos extras" value={data?.usage.credits?.balance ?? '--'} detail={data?.usage.credits?.has_credits ? 'creditos ativos' : 'sem creditos extras'} />
+                <MetricCard label="Tokens locais registrados" value={numberFmt.format(localTotals.tokens)} detail={`${numberFmt.format(localTotals.threads)} conversas no historico do Codex CLI`} />
+                <MetricCard label="Creditos extras" value={data?.usage.credits?.balance ?? '--'} detail={data?.usage.credits?.has_credits ? 'creditos ativos no Codex CLI' : 'sem creditos extras no Codex CLI'} />
               </div>
             </section>
+
+            <HermesCodexPanel hermesCodex={hermesCodex} loading={loading} />
 
             <CodexAccountsPanel
               admin={codexAdmin}
@@ -931,6 +950,73 @@ function App() {
         )}
       </div>
     </main>
+  )
+}
+
+function HermesCodexPanel({ hermesCodex, loading }: { hermesCodex?: HermesCodexPayload; loading: boolean }) {
+  const usage = hermesCodex?.usage
+  const primary = usage?.windows.primary
+  const secondary = usage?.windows.secondary
+  const ok = Boolean(hermesCodex?.ok && usage)
+  const remaining = primary?.remainingPercent ?? 0
+  const used = primary?.usedPercent ?? 0
+
+  return (
+    <section className="rounded-3xl border border-purple-300/20 bg-slate-900/75 p-4 shadow-xl shadow-purple-950/10 sm:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="mb-2 inline-flex rounded-full border border-purple-300/20 bg-purple-300/10 px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-purple-200">
+            Hermes separado do Codex CLI
+          </p>
+          <h2 className="text-xl font-bold text-white">Uso do Hermes OpenAI Codex</h2>
+          <p className="mt-1 max-w-3xl text-sm text-slate-400">
+            Este é o medidor que explica minhas respostas no Telegram quando o provider ativo é openai-codex. Ele lê <code className="rounded bg-white/5 px-1.5 py-0.5 text-xs">~/.hermes/auth.json</code>, não <code className="rounded bg-white/5 px-1.5 py-0.5 text-xs">~/.codex/auth.json</code>.
+          </p>
+        </div>
+        <span className={`rounded-full px-3 py-1 text-sm font-bold ${ok && usage?.status.allowed ? 'bg-emerald-400/15 text-emerald-200' : ok ? 'bg-red-400/15 text-red-200' : 'bg-amber-400/15 text-amber-100'}`}>
+          {loading ? 'Carregando...' : ok ? usage?.status.allowed ? 'Hermes liberado' : 'Hermes bloqueado' : 'Sem leitura'}
+        </span>
+      </div>
+
+      {!ok && !loading && (
+        <div className="mb-5 rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+          {hermesCodex?.error || 'Nao foi possivel ler o uso do Hermes OpenAI Codex.'}
+        </div>
+      )}
+
+      <div className="grid gap-5 lg:grid-cols-4">
+        <MetricCard
+          label="Conta Hermes"
+          value={usage?.account.email || '--'}
+          detail={`${usage?.account.planType || 'plano desconhecido'} • ${hermesCodex?.credentialLabel || 'credential_pool.openai-codex'}`}
+        />
+        <MetricCard
+          label="Janela Hermes 5h"
+          value={ok ? `${percentFmt.format(remaining)}% restante` : '--'}
+          detail={primary ? `${percentFmt.format(used)}% usado • reseta em ${formatDuration(primary.resetAfterSeconds)}` : 'Sem dados da janela principal'}
+        />
+        <MetricCard
+          label="Janela Hermes semanal"
+          value={secondary ? `${percentFmt.format(secondary.remainingPercent)}% restante` : '--'}
+          detail={secondary ? `${percentFmt.format(secondary.usedPercent)}% usado • reseta em ${formatDuration(secondary.resetAfterSeconds)}` : 'Sem dados da janela secundaria'}
+        />
+        <MetricCard
+          label="Fonte do medidor"
+          value="Hermes"
+          detail={hermesCodex?.authPath || '~/.hermes/auth.json'}
+        />
+      </div>
+
+      {primary && (
+        <div className="mt-5">
+          <div className="mb-2 flex justify-between text-xs text-slate-400">
+            <span>Hermes usado: {percentFmt.format(primary.usedPercent)}%</span>
+            <span>Hermes restante: {percentFmt.format(primary.remainingPercent)}%</span>
+          </div>
+          <Bar value={primary.usedPercent} color="from-purple-300 to-cyan-400" />
+        </div>
+      )}
+    </section>
   )
 }
 
