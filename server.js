@@ -167,12 +167,29 @@ function atomicWriteJson(filePath, data) {
   chmodPrivate(filePath)
 }
 
+function extractEmailFromIdToken(auth) {
+  const idToken = auth?.tokens?.id_token
+  if (!idToken || typeof idToken !== 'string') return null
+  try {
+    const parts = idToken.split('.')
+    if (parts.length < 2) return null
+    let payload = parts[1]
+    payload = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = 4 - (payload.length % 4)
+    if (padding !== 4) payload += '='.repeat(padding)
+    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    return decoded.email || null
+  } catch {
+    return null
+  }
+}
+
 function summarizeCodexAuth(authPath = CODEX_AUTH_PATH) {
   const exists = fs.existsSync(authPath)
   const auth = readJson(authPath)
   if (!auth) return { exists, email: null, accountIdHint: null, updatedAt: exists ? fs.statSync(authPath).mtime.toISOString() : null }
   const tokens = auth.tokens || {}
-  const email = auth.email || auth.user?.email || tokens.email || null
+  const email = auth.email || auth.user?.email || tokens.email || extractEmailFromIdToken(auth) || null
   const accountId = tokens.account_id || auth.account_id || null
   const stat = exists ? fs.statSync(authPath) : null
   return {
@@ -609,7 +626,7 @@ function normalizeUsage(usage) {
   return {
     checkedAt: new Date().toISOString(),
     account: {
-      email: redactEmail(usage.email),
+      email: redactEmail(usage.email || extractEmailFromIdToken(readJson(CODEX_AUTH_PATH))),
       planType: usage.plan_type,
       userId: usage.user_id,
     },
