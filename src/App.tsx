@@ -45,8 +45,69 @@ type PcMetricsPayload = {
   }
 }
 
+type DeepSeekBalanceInfo = {
+  is_available: boolean
+  balance_infos: Array<{
+    currency: string
+    total_balance: string
+    granted_balance: string
+    topped_up_balance: string
+  }>
+}
+
+type DeepSeekPayload = {
+  ok: boolean
+  checkedAt: string
+  balance: DeepSeekBalanceInfo
+}
+
 const numberFmt = new Intl.NumberFormat('pt-BR')
 const percentFmt = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 })
+
+const EMPTY_LOCAL: LimitsPayload['local'] = {
+  totals: { threads: 0, tokens: 0, last_used: null },
+  byModel: [],
+  recentThreads: [],
+}
+
+function safeNumber(value: unknown, fallback = 0) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+function normalizeLimitsPayload(payload: Partial<LimitsPayload> | null): LimitsPayload | null {
+  if (!payload?.usage) return null
+  const local = payload.local || EMPTY_LOCAL
+  return {
+    usage: payload.usage,
+    local: {
+      totals: {
+        threads: safeNumber(local.totals?.threads),
+        tokens: safeNumber(local.totals?.tokens),
+        last_used: local.totals?.last_used ?? null,
+      },
+      byModel: Array.isArray(local.byModel)
+        ? local.byModel.filter(Boolean).map((item) => ({
+            model: item.model || 'desconhecido',
+            provider: item.provider || 'desconhecido',
+            threads: safeNumber(item.threads),
+            tokens: safeNumber(item.tokens),
+            last_used: safeNumber(item.last_used, 0),
+          }))
+        : [],
+      recentThreads: Array.isArray(local.recentThreads)
+        ? local.recentThreads.filter(Boolean).map((thread) => ({
+            title: thread.title || 'Sem titulo',
+            model: thread.model || 'desconhecido',
+            provider: thread.provider || 'desconhecido',
+            cwd: thread.cwd || '',
+            tokens_used: safeNumber(thread.tokens_used),
+            updated_at: safeNumber(thread.updated_at, 0),
+          }))
+        : [],
+    },
+  }
+}
 
 function formatDuration(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds || 0))
@@ -78,10 +139,11 @@ function formatDate(value?: string | number | null) {
   return date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })
 }
 
-type TabId = 'codex' | 'pc'
+type TabId = 'codex' | 'deepseek' | 'pc'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'codex', label: 'Codex', icon: '🤖' },
+  { id: 'deepseek', label: 'DeepSeek', icon: '🧠' },
   { id: 'pc', label: 'PC Metrics', icon: '💻' },
 ]
 
@@ -116,10 +178,13 @@ function App() {
   const [tab, setTab] = useState<TabId>('codex')
   const [data, setData] = useState<LimitsPayload | null>(null)
   const [pcData, setPcData] = useState<PcMetricsPayload['metrics'] | null>(null)
+  const [dsData, setDsData] = useState<DeepSeekPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pcError, setPcError] = useState<string | null>(null)
+  const [dsError, setDsError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [pcLoading, setPcLoading] = useState(true)
+  const [dsLoading, setDsLoading] = useState(true)
 
   async function loadLimits() {
     try {
@@ -127,7 +192,9 @@ function App() {
       const response = await fetch('/api/limits')
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Falha ao consultar limites')
-      setData(payload)
+      const normalized = normalizeLimitsPayload(payload)
+      if (!normalized) throw new Error('Resposta da API de limites veio sem dados de uso')
+      setData(normalized)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro desconhecido')
     } finally {
@@ -149,25 +216,58 @@ function App() {
     }
   }
 
+  async function loadDeepSeek() {
+    try {
+      setDsError(null)
+      setDsLoading(true)
+      const response = await fetch('/api/deepseek')
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Falha ao consultar DeepSeek')
+      setDsData(payload)
+    } catch (err) {
+      setDsError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setDsLoading(false)
+    }
+  }
+
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
       loadLimits()
       loadPcMetrics()
+      loadDeepSeek()
     }, 0)
-    const timer = window.setInterval(() => {
+    const fullRefreshTimer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
       loadLimits()
-      loadPcMetrics()
+      loadDeepSeek()
     }, 60_000)
+    const pcRealtimeTimer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      loadPcMetrics()
+    }, 2_000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      loadPcMetrics()
+      loadLimits()
+      loadDeepSeek()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       window.clearTimeout(initialLoad)
-      window.clearInterval(timer)
+      window.clearInterval(fullRefreshTimer)
+      window.clearInterval(pcRealtimeTimer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 
   const totalModelTokens = useMemo(() => {
-    return data?.local.byModel.reduce((sum, item) => sum + Number(item.tokens || 0), 0) || 0
+    return data?.local.byModel.reduce((sum, item) => sum + safeNumber(item.tokens), 0) || 0
   }, [data])
 
+  const localTotals = data?.local.totals || EMPTY_LOCAL.totals
+  const byModel = data?.local.byModel || []
+  const recentThreads = data?.local.recentThreads || []
   const primary = data?.usage.windows.primary
   const secondary = data?.usage.windows.secondary
 
@@ -186,6 +286,8 @@ function App() {
             <p className="mt-4 max-w-2xl text-sm text-slate-300 sm:text-lg">
               {tab === 'codex'
                 ? 'Acompanha a janela das proximas 5 horas, limite secundario, creditos e metricas locais por modelo usando o login do Codex neste PC.'
+                : tab === 'deepseek'
+                ? 'Saldo disponivel na conta DeepSeek, historico de uso e status da API.'
                 : 'Monitoramento em tempo real de CPU, RAM, discos, temperatura e uptime deste servidor.'}
             </p>
           </div>
@@ -194,7 +296,7 @@ function App() {
             {tab === 'codex' && <span>Conta: {data?.usage.account.email || 'Carregando...'}</span>}
             {tab === 'codex' && <span>Plano: {data?.usage.account.planType || '-'}</span>}
             <button
-              onClick={() => { loadLimits(); loadPcMetrics() }}
+              onClick={() => { loadLimits(); loadPcMetrics(); loadDeepSeek() }}
               className="w-full rounded-xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 transition hover:bg-cyan-200 sm:w-auto sm:py-2"
               type="button"
             >
@@ -217,14 +319,20 @@ function App() {
           </section>
         )}
 
+        {tab === 'deepseek' && dsError && (
+          <section className="rounded-3xl border border-red-400/30 bg-red-500/10 p-5 text-red-100">
+            <strong>Erro ao carregar DeepSeek:</strong> {dsError}
+          </section>
+        )}
+
         {/* ─── Codex Tab ─── */}
         {tab === 'codex' && (
           <>
             <section className="grid gap-5 lg:grid-cols-[1.35fr_0.65fr]">
               <LimitHero window={primary} loading={loading} />
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
-                <MetricCard label="Limite semanal restante" value={secondary ? `${percentFmt.format(secondary.remainingPercent)}%` : '--'} detail={secondary ? `reseta em ${formatDuration(secondary.resetAfterSeconds)}` : 'Sem dados'} />
-                <MetricCard label="Tokens locais registrados" value={numberFmt.format(data?.local.totals.tokens || 0)} detail={`${numberFmt.format(data?.local.totals.threads || 0)} conversas no historico`} />
+                <WeeklyLimitCard window={secondary} />
+                <MetricCard label="Tokens locais registrados" value={numberFmt.format(localTotals.tokens)} detail={`${numberFmt.format(localTotals.threads)} conversas no historico`} />
                 <MetricCard label="Creditos extras" value={data?.usage.credits?.balance ?? '--'} detail={data?.usage.credits?.has_credits ? 'creditos ativos' : 'sem creditos extras'} />
               </div>
             </section>
@@ -238,7 +346,7 @@ function App() {
                   <Row label="Uso bloqueado" value={data?.usage.status.limitReached ? 'Sim' : 'Nao'} />
                   <Row label="Tipo de bloqueio" value={data?.usage.status.reachedType || 'Nenhum'} />
                   <Row label="Ultima leitura" value={formatDate(data?.usage.checkedAt)} />
-                  <Row label="Ultimo uso local" value={formatDate(data?.local.totals.last_used)} />
+                  <Row label="Ultimo uso local" value={formatDate(localTotals.last_used)} />
                 </div>
               </section>
             </section>
@@ -253,10 +361,10 @@ function App() {
                   <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">{numberFmt.format(totalModelTokens)} tokens</span>
                 </div>
                 <div className="space-y-4">
-                  {(data?.local.byModel || []).map((item) => (
+                  {byModel.map((item) => (
                     <ModelBar key={`${item.provider}-${item.model}`} item={item} total={totalModelTokens} />
                   ))}
-                  {!data?.local.byModel.length && <p className="text-slate-400">Nenhuma metrica local encontrada ainda.</p>}
+                  {byModel.length === 0 && <p className="text-slate-400">Nenhuma metrica local encontrada ainda.</p>}
                 </div>
               </section>
 
@@ -264,7 +372,7 @@ function App() {
                 <h2 className="text-xl font-bold text-white">Conversas recentes</h2>
                 <p className="mt-1 text-sm text-slate-400">Ajuda a entender onde o consumo local foi gerado.</p>
                 <div className="mt-5 space-y-3">
-                  {(data?.local.recentThreads || []).map((thread, index) => (
+                  {recentThreads.map((thread, index) => (
                     <article key={`${thread.updated_at}-${index}`} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:p-4">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                         <h3 className="line-clamp-2 font-semibold text-slate-100">{thread.title || 'Sem titulo'}</h3>
@@ -279,6 +387,90 @@ function App() {
                 </div>
               </section>
             </section>
+          </>
+        )}
+
+        {/* ─── DeepSeek Tab ─── */}
+        {tab === 'deepseek' && (
+          <>
+            {dsLoading && !dsData && (
+              <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-8 text-center text-slate-400">
+                Carregando saldo do DeepSeek...
+              </div>
+            )}
+
+            {dsData && dsData.balance && (
+              <>
+                {/* Saldo principal */}
+                <section className="grid gap-5 lg:grid-cols-[1.35fr_0.65fr]">
+                  <section className="relative overflow-hidden rounded-3xl border border-emerald-200/10 bg-slate-900/80 p-4 shadow-2xl shadow-emerald-950/20 sm:rounded-[2rem] sm:p-8">
+                    <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-emerald-300/10 blur-3xl" />
+                    <div className="relative">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200 sm:text-sm sm:tracking-[0.24em]">
+                        Saldo DeepSeek
+                      </p>
+                      {dsData.balance.balance_infos.map((b, i) => (
+                        <div key={i} className="mt-4">
+                          <div className="flex items-baseline gap-3">
+                            <h2 className="text-5xl font-black text-white sm:text-7xl">
+                              ${parseFloat(b.total_balance).toFixed(2)}
+                            </h2>
+                            <span className="text-xl text-slate-400">{b.currency}</span>
+                          </div>
+                          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                            <MiniStat label="Concedido" value={`$${parseFloat(b.granted_balance).toFixed(2)}`} />
+                            <MiniStat label="Recarregado" value={`$${parseFloat(b.topped_up_balance).toFixed(2)}`} />
+                            <MiniStat label="Disponivel" value={dsData.balance.is_available ? 'Sim' : 'Nao'} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">
+                    <MetricCard
+                      label="Status da API"
+                      value={dsData.balance.is_available ? 'Operacional' : 'Indisponivel'}
+                      detail="Consulta feita via API oficial DeepSeek"
+                    />
+                    <MetricCard
+                      label="Ultima atualizacao"
+                      value={formatDate(dsData.checkedAt).split(', ')[1] || formatDate(dsData.checkedAt)}
+                      detail={formatDate(dsData.checkedAt)}
+                    />
+                  </div>
+                </section>
+
+                {/* Detalhes das contas */}
+                <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 sm:p-6">
+                  <h2 className="text-xl font-bold text-white">Detalhes da conta</h2>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Informacoes retornadas pela API <code className="rounded bg-white/5 px-1.5 py-0.5 text-xs">/v1/user/balance</code>
+                  </p>
+                  <div className="mt-5 space-y-3">
+                    {dsData.balance.balance_infos.map((b, i) => (
+                      <article key={i} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                        <h3 className="mb-3 text-lg font-semibold text-slate-100">
+                          Saldo em {b.currency}
+                        </h3>
+                        <div className="space-y-4 text-sm text-slate-300">
+                          <Row label="Total" value={`$${parseFloat(b.total_balance).toFixed(2)}`} />
+                          <Row label="Concedido (gratis)" value={`$${parseFloat(b.granted_balance).toFixed(2)}`} />
+                          <Row label="Recarregado (pagamento)" value={`$${parseFloat(b.topped_up_balance).toFixed(2)}`} />
+                          <Row label="Disponivel" value={dsData.balance.is_available ? 'Sim' : 'Nao'} />
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </>
+            )}
+
+            {!dsLoading && !dsData && !dsError && (
+              <section className="rounded-3xl border border-amber-400/30 bg-amber-500/10 p-5 text-amber-100">
+                <strong>Sem dados.</strong> Nao foi possivel carregar o saldo do DeepSeek.
+              </section>
+            )}
           </>
         )}
 
@@ -491,6 +683,35 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
       <p className="text-sm text-slate-400">{label}</p>
       <strong className="mt-2 block break-words text-2xl font-black text-white sm:text-3xl">{value}</strong>
       <span className="mt-2 block text-sm text-slate-400">{detail}</span>
+    </section>
+  )
+}
+
+function WeeklyLimitCard({ window }: { window?: WindowInfo | null }) {
+  const used = window?.usedPercent ?? 0
+  const remaining = window?.remainingPercent ?? 0
+  return (
+    <section className="rounded-3xl border border-cyan-300/20 bg-slate-900/70 p-4 sm:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm text-slate-400">Limite semanal Codex</p>
+          <strong className="mt-2 block text-2xl font-black text-white sm:text-3xl">
+            {window ? `${percentFmt.format(remaining)}% restante` : '--'}
+          </strong>
+        </div>
+        <span className="rounded-full bg-cyan-300/10 px-3 py-1 text-xs font-bold text-cyan-200">7 dias</span>
+      </div>
+      <div className="mt-4">
+        <div className="mb-2 flex justify-between text-xs text-slate-400">
+          <span>Usado: {window ? `${percentFmt.format(used)}%` : '--'}</span>
+          <span>Restante: {window ? `${percentFmt.format(remaining)}%` : '--'}</span>
+        </div>
+        <Bar value={used} color="from-amber-300 to-red-400" />
+      </div>
+      <div className="mt-4 space-y-1 text-sm text-slate-400">
+        <p>Reseta em: <span className="font-semibold text-slate-200">{window ? formatDuration(window.resetAfterSeconds) : '--'}</span></p>
+        <p>Reset exato: <span className="font-semibold text-slate-200">{window ? formatDate(window.resetAt) : '--'}</span></p>
+      </div>
     </section>
   )
 }

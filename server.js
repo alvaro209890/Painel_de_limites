@@ -312,6 +312,52 @@ app.get('/api/pc-metrics', (_req, res) => {
   }
 })
 
+// ─── DeepSeek ──────────────────────────────────────────────────
+
+const HERMES_ENV_PATH = path.join(os.homedir(), '.hermes', '.env')
+
+function readDeepSeekKey() {
+  try {
+    if (!fs.existsSync(HERMES_ENV_PATH)) return null
+    const raw = fs.readFileSync(HERMES_ENV_PATH, 'utf8')
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('DEEPSEEK_API_KEY=')) {
+        return trimmed.split('=', 2)[1]?.trim() || null
+      }
+    }
+    return process.env.DEEPSEEK_API_KEY || null
+  } catch {
+    return process.env.DEEPSEEK_API_KEY || null
+  }
+}
+
+app.get('/api/deepseek', async (_req, res) => {
+  try {
+    const key = readDeepSeekKey()
+    if (!key) {
+      return res.status(400).json({ error: 'DEEPSEEK_API_KEY nao encontrada', checkedAt: new Date().toISOString() })
+    }
+
+    const response = await fetch('https://api.deepseek.com/v1/user/balance', {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    const text = await response.text()
+    if (!response.ok) {
+      throw new Error(`Falha ao consultar saldo DeepSeek: HTTP ${response.status} ${text.slice(0, 160)}`)
+    }
+
+    const data = JSON.parse(text)
+    res.json({
+      ok: true,
+      checkedAt: new Date().toISOString(),
+      balance: data,
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
 // ─── Error handling middleware ──────────────────────────────────
 
 app.use((err, _req, res, _next) => {
@@ -336,6 +382,23 @@ function startStaticServer() {
   }
 
   const staticApp = express()
+  staticApp.use('/api', (req, res) => {
+    const target = `http://127.0.0.1:${API_PORT}${req.originalUrl}`
+    fetch(target, {
+      method: req.method,
+      headers: { accept: req.headers.accept || 'application/json' },
+    })
+      .then(async (apiRes) => {
+        res.status(apiRes.status)
+        const contentType = apiRes.headers.get('content-type') || 'application/json'
+        res.setHeader('content-type', contentType)
+        res.send(await apiRes.text())
+      })
+      .catch((err) => {
+        res.status(502).json({ error: `Falha no proxy da API: ${err.message}`, checkedAt: new Date().toISOString() })
+      })
+  })
+
   staticApp.use(express.static(DIST_DIR, {
     index: 'index.html',
     maxAge: '1h',
