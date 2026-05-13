@@ -1,3 +1,6 @@
+# Hermes agent plans
+.hermes/
+
 # Logs
 logs
 *.log

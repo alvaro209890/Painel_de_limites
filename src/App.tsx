@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 type WindowInfo = {
@@ -61,6 +61,44 @@ type DeepSeekPayload = {
   balance: DeepSeekBalanceInfo
 }
 
+type CodexProfile = {
+  slug: string
+  name: string
+  emailHint: string | null
+  accountIdHint: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  lastActivatedAt: string | null
+  isActive: boolean
+}
+
+type CodexProfilesPayload = {
+  ok: boolean
+  active: { exists: boolean; email: string | null; accountIdHint: string | null; updatedAt: string | null }
+  profiles: CodexProfile[]
+  checkedAt?: string
+}
+
+type CodexAdminStatus = {
+  ok: boolean
+  adminConfigured: boolean
+  authenticated: boolean
+}
+
+type CodexLoginStatus = {
+  ok: boolean
+  sessionId?: string
+  startedAt?: string
+  command?: string
+  running: boolean
+  exitCode: number | null
+  loginUrl: string | null
+  userCode: string | null
+  outputTail: string
+  authExists: boolean
+  error: string | null
+}
+
 const numberFmt = new Intl.NumberFormat('pt-BR')
 const percentFmt = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 })
 
@@ -75,11 +113,31 @@ function safeNumber(value: unknown, fallback = 0) {
   return Number.isFinite(number) ? number : fallback
 }
 
+function safeText(value: unknown, fallback = '') {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'object') {
+    const maybe = value as { type?: unknown; details?: unknown; message?: unknown; error?: unknown }
+    if (maybe.type || maybe.details) return [maybe.type, maybe.details].filter(Boolean).map(String).join(' — ')
+    if (maybe.message) return String(maybe.message)
+    if (maybe.error) return String(maybe.error)
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
 function normalizeLimitsPayload(payload: Partial<LimitsPayload> | null): LimitsPayload | null {
   if (!payload?.usage) return null
   const local = payload.local || EMPTY_LOCAL
   return {
-    usage: payload.usage,
+    usage: {
+      ...payload.usage,
+      status: {
+        ...payload.usage.status,
+        reachedType: safeText(payload.usage.status?.reachedType, '') || null,
+      },
+    },
     local: {
       totals: {
         threads: safeNumber(local.totals?.threads),
@@ -139,6 +197,19 @@ function formatDate(value?: string | number | null) {
   return date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })
 }
 
+async function adminFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const method = options.method || 'GET'
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(method !== 'GET' ? { 'Content-Type': 'application/json', 'x-admin-action': '1' } : {}),
+    ...((options.headers || {}) as Record<string, string>),
+  }
+  const response = await fetch(url, { ...options, method, headers })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error || 'Falha na requisicao')
+  return payload as T
+}
+
 type TabId = 'codex' | 'deepseek' | 'pc'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
@@ -185,6 +256,14 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [pcLoading, setPcLoading] = useState(true)
   const [dsLoading, setDsLoading] = useState(true)
+  const [codexAdmin, setCodexAdmin] = useState<CodexAdminStatus | null>(null)
+  const [profilesData, setProfilesData] = useState<CodexProfilesPayload | null>(null)
+  const [profilesError, setProfilesError] = useState<string | null>(null)
+  const [adminPassword, setAdminPassword] = useState('')
+  const [newProfileName, setNewProfileName] = useState('')
+  const [codexLogin, setCodexLogin] = useState<CodexLoginStatus | null>(null)
+  const [profilesBusy, setProfilesBusy] = useState(false)
+  const codexLoginPopupRef = useRef<Window | null>(null)
 
   async function loadLimits() {
     try {
@@ -231,11 +310,158 @@ function App() {
     }
   }
 
+  async function loadCodexAdminStatus() {
+    try {
+      const payload = await adminFetch<CodexAdminStatus>('/api/codex-profiles/status')
+      setCodexAdmin(payload)
+      if (!payload.authenticated) setProfilesData(null)
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    }
+  }
+
+  async function loadCodexProfiles() {
+    try {
+      setProfilesError(null)
+      const payload = await adminFetch<CodexProfilesPayload>('/api/codex-profiles')
+      setProfilesData(payload)
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    }
+  }
+
+  async function loadCodexLoginStatus() {
+    try {
+      const payload = await adminFetch<CodexLoginStatus>('/api/codex-login/status')
+      setCodexLogin(payload)
+      openCodexLoginUrlIfReady(payload)
+    } catch {
+      // Ignora enquanto nao autenticado.
+    }
+  }
+
+  function prepareCodexLoginPopup() {
+    const popup = window.open('', 'codex-login', 'popup=yes,width=760,height=860')
+    codexLoginPopupRef.current = popup
+    if (!popup) {
+      setProfilesError('O navegador bloqueou a janela de login. Libere pop-ups para este site ou use o link que aparecer no painel.')
+      return
+    }
+    popup.document.write(`<!doctype html><html><head><title>Login Codex</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:520px;padding:32px;text-align:center"><h1 style="color:white">Preparando login Codex...</h1><p>O painel esta iniciando <code>codex login --device-auth</code> no servidor. Assim que a OpenAI retornar a URL, esta janela vai abrir a pagina de login automaticamente.</p></main></body></html>`)
+    popup.document.close()
+  }
+
+  function openCodexLoginUrlIfReady(status: CodexLoginStatus | null) {
+    if (!status?.loginUrl) return
+    const popup = codexLoginPopupRef.current
+    if (popup && !popup.closed && popup.location.href !== status.loginUrl) {
+      popup.location.href = status.loginUrl
+    }
+  }
+
+  async function loginCodexAdmin() {
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      await adminFetch<{ ok: boolean }>('/api/codex-profiles/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: adminPassword }),
+      })
+      setAdminPassword('')
+      await loadCodexAdminStatus()
+      await loadCodexProfiles()
+      await loadCodexLoginStatus()
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function saveCurrentCodexProfile() {
+    const name = newProfileName.trim()
+    if (!name) {
+      setProfilesError('Informe um nome para o perfil.')
+      return
+    }
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      const payload = await adminFetch<CodexProfilesPayload>('/api/codex-profiles/save-current', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      })
+      setProfilesData(payload)
+      setNewProfileName('')
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function activateCodexProfile(slug: string) {
+    if (!window.confirm('Ativar este perfil vai substituir ~/.codex/auth.json atual, com backup. Continuar?')) return
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      const payload = await adminFetch<CodexProfilesPayload>(`/api/codex-profiles/${slug}/activate`, { method: 'POST' })
+      setProfilesData(payload)
+      await loadLimits()
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function deleteCodexProfile(slug: string) {
+    if (!window.confirm('Excluir este perfil salvo? A conta ativa nao sera removida.')) return
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      const payload = await adminFetch<CodexProfilesPayload>(`/api/codex-profiles/${slug}`, { method: 'DELETE' })
+      setProfilesData(payload)
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function startCodexLogin() {
+    prepareCodexLoginPopup()
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      const payload = await adminFetch<CodexLoginStatus>('/api/codex-login/start', { method: 'POST' })
+      setCodexLogin(payload)
+      openCodexLoginUrlIfReady(payload)
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function cancelCodexLogin() {
+    try {
+      setProfilesBusy(true)
+      const payload = await adminFetch<CodexLoginStatus>('/api/codex-login/cancel', { method: 'POST' })
+      setCodexLogin(payload)
+    } catch (err) {
+      setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
       loadLimits()
       loadPcMetrics()
       loadDeepSeek()
+      loadCodexAdminStatus()
     }, 0)
     const fullRefreshTimer = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
@@ -260,6 +486,20 @@ function App() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
+
+  useEffect(() => {
+    if (!codexAdmin?.authenticated) return
+    loadCodexProfiles()
+    loadCodexLoginStatus()
+  }, [codexAdmin?.authenticated])
+
+  useEffect(() => {
+    if (!codexAdmin?.authenticated) return
+    const timer = window.setInterval(() => {
+      loadCodexLoginStatus()
+    }, 2_000)
+    return () => window.clearInterval(timer)
+  }, [codexAdmin?.authenticated])
 
   const totalModelTokens = useMemo(() => {
     return data?.local.byModel.reduce((sum, item) => sum + safeNumber(item.tokens), 0) || 0
@@ -336,6 +576,25 @@ function App() {
                 <MetricCard label="Creditos extras" value={data?.usage.credits?.balance ?? '--'} detail={data?.usage.credits?.has_credits ? 'creditos ativos' : 'sem creditos extras'} />
               </div>
             </section>
+
+            <CodexAccountsPanel
+              admin={codexAdmin}
+              profilesData={profilesData}
+              loginStatus={codexLogin}
+              error={profilesError}
+              adminPassword={adminPassword}
+              newProfileName={newProfileName}
+              busy={profilesBusy}
+              onAdminPasswordChange={setAdminPassword}
+              onNewProfileNameChange={setNewProfileName}
+              onAdminLogin={loginCodexAdmin}
+              onSaveCurrent={saveCurrentCodexProfile}
+              onActivate={activateCodexProfile}
+              onDelete={deleteCodexProfile}
+              onStartLogin={startCodexLogin}
+              onCancelLogin={cancelCodexLogin}
+              onRefresh={() => { loadCodexProfiles(); loadCodexLoginStatus(); loadLimits() }}
+            />
 
             <section className="grid gap-5 lg:grid-cols-3">
               <InfoPanel title="Janela principal" window={primary} />
@@ -599,6 +858,229 @@ function App() {
         )}
       </div>
     </main>
+  )
+}
+
+
+function CodexAccountsPanel({
+  admin,
+  profilesData,
+  loginStatus,
+  error,
+  adminPassword,
+  newProfileName,
+  busy,
+  onAdminPasswordChange,
+  onNewProfileNameChange,
+  onAdminLogin,
+  onSaveCurrent,
+  onActivate,
+  onDelete,
+  onStartLogin,
+  onCancelLogin,
+  onRefresh,
+}: {
+  admin: CodexAdminStatus | null
+  profilesData: CodexProfilesPayload | null
+  loginStatus: CodexLoginStatus | null
+  error: string | null
+  adminPassword: string
+  newProfileName: string
+  busy: boolean
+  onAdminPasswordChange: (value: string) => void
+  onNewProfileNameChange: (value: string) => void
+  onAdminLogin: () => void
+  onSaveCurrent: () => void
+  onActivate: (slug: string) => void
+  onDelete: (slug: string) => void
+  onStartLogin: () => void
+  onCancelLogin: () => void
+  onRefresh: () => void
+}) {
+  return (
+    <section className="rounded-3xl border border-cyan-300/20 bg-slate-900/75 p-4 shadow-xl shadow-cyan-950/10 sm:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-white">Contas Codex</h2>
+          <p className="mt-1 text-sm text-slate-400">
+            Gerencie perfis locais, faça login pelo site e alterne qual auth.json fica ativo neste servidor.
+          </p>
+        </div>
+        <button
+          className="rounded-xl border border-white/10 px-4 py-2 text-sm font-bold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+          disabled={busy}
+          onClick={onRefresh}
+          type="button"
+        >
+          Atualizar contas
+        </button>
+      </div>
+
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-100">
+          {error}
+        </div>
+      )}
+
+      {admin && !admin.adminConfigured && (
+        <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4 text-amber-100">
+          Configure a senha admin no servidor antes de usar esta area: LIMITS_PANEL_ADMIN_PASSWORD ou arquivo seguro gerado em ~/.config/codex-profiles/admin-secret.json.
+        </div>
+      )}
+
+      {(!admin || !admin.authenticated) && admin?.adminConfigured !== false && (
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-slate-300">Senha admin</span>
+            <input
+              className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-white outline-none transition focus:border-cyan-300/60"
+              onChange={(event) => onAdminPasswordChange(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') onAdminLogin() }}
+              placeholder="Digite a senha admin do painel"
+              type="password"
+              value={adminPassword}
+            />
+          </label>
+          <button
+            className="rounded-xl bg-cyan-300 px-5 py-3 font-bold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
+            disabled={busy || !adminPassword.trim()}
+            onClick={onAdminLogin}
+            type="button"
+          >
+            Entrar como admin
+          </button>
+        </div>
+      )}
+
+      {admin?.authenticated && (
+        <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="space-y-5">
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 className="font-bold text-white">Conta ativa</h3>
+              <div className="mt-4 space-y-3 text-sm text-slate-300">
+                <Row label="Auth encontrado" value={profilesData?.active.exists ? 'Sim' : 'Nao'} />
+                <Row label="Email" value={profilesData?.active.email || 'Nao identificado'} />
+                <Row label="Conta" value={profilesData?.active.accountIdHint || 'Nao identificado'} />
+                <Row label="Atualizado" value={formatDate(profilesData?.active.updatedAt)} />
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 className="font-bold text-white">Salvar conta ativa como perfil</h3>
+              <p className="mt-1 text-xs text-slate-400">Copia ~/.codex/auth.json para ~/.config/codex-profiles/profiles/.</p>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                <input
+                  className="min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-950/50 px-4 py-3 text-white outline-none transition focus:border-cyan-300/60"
+                  onChange={(event) => onNewProfileNameChange(event.target.value)}
+                  placeholder="Ex: Álvaro pessoal"
+                  value={newProfileName}
+                />
+                <button
+                  className="rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 transition hover:bg-emerald-200 disabled:opacity-50"
+                  disabled={busy || !newProfileName.trim()}
+                  onClick={onSaveCurrent}
+                  type="button"
+                >
+                  Salvar
+                </button>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 className="font-bold text-white">Login Codex pelo site</h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Ao clicar, o painel abre uma janela de login da OpenAI/Codex, inicia codex login --device-auth no servidor e acompanha tudo por aqui. Depois do login, salve a conta ativa como perfil.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  className="rounded-xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
+                  disabled={busy || loginStatus?.running}
+                  onClick={onStartLogin}
+                  type="button"
+                >
+                  Iniciar login e abrir pagina Codex
+                </button>
+                {loginStatus?.running && (
+                  <button
+                    className="rounded-xl border border-red-300/30 px-4 py-3 font-bold text-red-100 transition hover:bg-red-500/10"
+                    onClick={onCancelLogin}
+                    type="button"
+                  >
+                    Cancelar
+                  </button>
+                )}
+              </div>
+              {loginStatus && (
+                <div className="mt-4 space-y-3 text-sm text-slate-300">
+                  <Row label="Status" value={loginStatus.running ? 'Login em andamento' : loginStatus.exitCode === 0 ? 'Finalizado' : loginStatus.error || 'Parado'} />
+                  <Row label="Auth existe" value={loginStatus.authExists ? 'Sim' : 'Nao'} />
+                  {loginStatus.loginUrl && (
+                    <a className="block rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 font-semibold text-cyan-100 hover:bg-cyan-300/15" href={loginStatus.loginUrl} rel="noreferrer" target="_blank">
+                      Abrir pagina de login Codex
+                    </a>
+                  )}
+                  {loginStatus.userCode && <Row label="Codigo" value={loginStatus.userCode} />}
+                  {loginStatus.outputTail && (
+                    <pre className="max-h-48 overflow-auto rounded-xl bg-black/30 p-3 text-xs text-slate-300 whitespace-pre-wrap">{loginStatus.outputTail}</pre>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+
+          <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-white">Perfis salvos</h3>
+                <p className="text-xs text-slate-400">Tokens nunca sao enviados ao navegador.</p>
+              </div>
+              <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">{profilesData?.profiles.length || 0} perfis</span>
+            </div>
+
+            <div className="space-y-3">
+              {profilesData?.profiles.map((profile) => (
+                <article key={profile.slug} className="rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="font-bold text-white">{profile.name}</h4>
+                        {profile.isActive && <span className="rounded-full bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">ativo</span>}
+                      </div>
+                      <p className="mt-1 text-sm text-slate-400">{profile.emailHint || 'Email nao identificado'} • {profile.accountIdHint || profile.slug}</p>
+                      <p className="mt-1 text-xs text-slate-500">Criado: {formatDate(profile.createdAt)} • Ultima ativacao: {formatDate(profile.lastActivatedAt)}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        className="rounded-lg bg-cyan-300 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
+                        disabled={busy || profile.isActive}
+                        onClick={() => onActivate(profile.slug)}
+                        type="button"
+                      >
+                        Ativar
+                      </button>
+                      <button
+                        className="rounded-lg border border-red-300/30 px-3 py-2 text-sm font-bold text-red-100 transition hover:bg-red-500/10 disabled:opacity-50"
+                        disabled={busy}
+                        onClick={() => onDelete(profile.slug)}
+                        type="button"
+                      >
+                        Excluir
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+              {profilesData && profilesData.profiles.length === 0 && (
+                <p className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-400">Nenhum perfil salvo ainda.</p>
+              )}
+              {!profilesData && (
+                <p className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-400">Carregando perfis...</p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+    </section>
   )
 }
 
