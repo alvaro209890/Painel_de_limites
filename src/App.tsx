@@ -65,6 +65,7 @@ type CodexProfile = {
   slug: string
   name: string
   emailHint: string | null
+  planType: string | null
   accountIdHint: string | null
   createdAt: string | null
   updatedAt: string | null
@@ -74,7 +75,7 @@ type CodexProfile = {
 
 type CodexProfilesPayload = {
   ok: boolean
-  active: { exists: boolean; email: string | null; accountIdHint: string | null; updatedAt: string | null }
+  active: { exists: boolean; email: string | null; planType: string | null; accountIdHint: string | null; updatedAt: string | null }
   profiles: CodexProfile[]
   checkedAt?: string
 }
@@ -533,7 +534,7 @@ function App() {
           </div>
           <div className="flex flex-col gap-3 text-sm text-slate-300 md:items-end">
             {tab === 'codex' && <StatusPill allowed={data?.usage.status.allowed} loading={loading} />}
-            {tab === 'codex' && <span>Conta: {data?.usage.account.email || 'Carregando...'}</span>}
+            {tab === 'codex' && <span>Conta: {data?.usage.account.email || 'Carregando...'} <PlanBadge planType={data?.usage.account.planType} /></span>}
             {tab === 'codex' && <span>Plano: {data?.usage.account.planType || '-'}</span>}
             <button
               onClick={() => { loadLimits(); loadPcMetrics(); loadDeepSeek() }}
@@ -959,7 +960,7 @@ function CodexAccountsPanel({
               <h3 className="font-bold text-white">Conta ativa</h3>
               <div className="mt-4 space-y-3 text-sm text-slate-300">
                 <Row label="Auth encontrado" value={profilesData?.active.exists ? 'Sim' : 'Nao'} />
-                <Row label="Email" value={profilesData?.active.email || 'Nao identificado'} />
+                <Row label="Email" value={`${profilesData?.active.email || 'Nao identificado'} ${profilePlanLabel(profilesData?.active.planType)}`} />
                 <Row label="Conta" value={profilesData?.active.accountIdHint || 'Nao identificado'} />
                 <Row label="Atualizado" value={formatDate(profilesData?.active.updatedAt)} />
               </div>
@@ -1046,7 +1047,7 @@ function CodexAccountsPanel({
                         <h4 className="font-bold text-white">{profile.name}</h4>
                         {profile.isActive && <span className="rounded-full bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">ativo</span>}
                       </div>
-                      <p className="mt-1 text-sm text-slate-400">{profile.emailHint || 'Email nao identificado'} • {profile.accountIdHint || profile.slug}</p>
+                      <p className="mt-1 text-sm text-slate-400">{profile.emailHint || 'Email nao identificado'}{profile.planType ? <PlanBadge planType={profile.planType} /> : null} • {profile.accountIdHint || profile.slug}</p>
                       <p className="mt-1 text-xs text-slate-500">Criado: {formatDate(profile.createdAt)} • Ultima ativacao: {formatDate(profile.lastActivatedAt)}</p>
                     </div>
                     <div className="flex shrink-0 gap-2">
@@ -1104,6 +1105,22 @@ function StatusPill({ allowed, loading }: { allowed?: boolean; loading: boolean 
       {allowed ? 'Uso liberado' : 'Limite atingido'}
     </span>
   )
+}
+
+function PlanBadge({ planType }: { planType: string | null | undefined }) {
+  if (!planType) return null
+  const lower = planType.toLowerCase()
+  if (lower.includes('plus')) return <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 px-2 py-0.5 text-[0.65rem] font-bold text-amber-200 shadow-sm shadow-amber-950/30">⭐ PLUS</span>
+  if (lower.includes('pro')) return <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-purple-500/20 to-violet-500/20 px-2 py-0.5 text-[0.65rem] font-bold text-purple-200 shadow-sm shadow-purple-950/30">🔷 PRO</span>
+  return <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-slate-400">◻️ FREE</span>
+}
+
+function profilePlanLabel(planType: string | null | undefined): string {
+  if (!planType) return ''
+  const lower = planType.toLowerCase()
+  if (lower.includes('plus')) return '⭐ PLUS'
+  if (lower.includes('pro')) return '🔷 PRO'
+  return '◻️ FREE'
 }
 
 function LimitHero({ window, loading }: { window?: WindowInfo | null; loading: boolean }) {

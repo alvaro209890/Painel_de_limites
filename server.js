@@ -184,17 +184,36 @@ function extractEmailFromIdToken(auth) {
   }
 }
 
+function extractPlanTypeFromIdToken(auth) {
+  const idToken = auth?.tokens?.id_token
+  if (!idToken || typeof idToken !== 'string') return null
+  try {
+    const parts = idToken.split('.')
+    if (parts.length < 2) return null
+    let payload = parts[1]
+    payload = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = 4 - (payload.length % 4)
+    if (padding !== 4) payload += '='.repeat(padding)
+    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    return decoded['https://api.openai.com/auth']?.chatgpt_plan_type || null
+  } catch {
+    return null
+  }
+}
+
 function summarizeCodexAuth(authPath = CODEX_AUTH_PATH) {
   const exists = fs.existsSync(authPath)
   const auth = readJson(authPath)
-  if (!auth) return { exists, email: null, accountIdHint: null, updatedAt: exists ? fs.statSync(authPath).mtime.toISOString() : null }
+  if (!auth) return { exists, email: null, planType: null, accountIdHint: null, updatedAt: exists ? fs.statSync(authPath).mtime.toISOString() : null }
   const tokens = auth.tokens || {}
   const email = auth.email || auth.user?.email || tokens.email || extractEmailFromIdToken(auth) || null
   const accountId = tokens.account_id || auth.account_id || null
+  const planType = extractPlanTypeFromIdToken(auth) || null
   const stat = exists ? fs.statSync(authPath) : null
   return {
     exists: true,
     email: redactEmail(email),
+    planType,
     accountIdHint: accountId ? `${String(accountId).slice(0, 6)}***${String(accountId).slice(-4)}` : null,
     updatedAt: stat ? stat.mtime.toISOString() : null,
   }
@@ -216,6 +235,7 @@ function listCodexProfiles() {
       slug,
       name: meta.name || slug,
       emailHint: meta.emailHint || summary.email || null,
+      planType: summary.planType,
       accountIdHint: meta.accountIdHint || summary.accountIdHint || null,
       createdAt: meta.createdAt || (fs.existsSync(authPath) ? fs.statSync(authPath).birthtime.toISOString() : null),
       updatedAt: meta.updatedAt || summary.updatedAt,
