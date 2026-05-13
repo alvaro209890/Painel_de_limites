@@ -100,6 +100,25 @@ type CodexLoginStatus = {
   error: string | null
 }
 
+type CodexRotationPayload = {
+  ok: boolean
+  config: {
+    enabled: boolean
+    intervalSeconds: number
+    cooldownSeconds: number
+    thresholdUsedPercent: number
+    notifyOnly: boolean
+    preferredOrder: string[]
+    skipSlugs: string[]
+    updatedAt?: string | null
+  }
+  running: boolean
+  scheduled: boolean
+  lastRunAt: string | null
+  lastResult: unknown
+  events: Array<Record<string, unknown>>
+}
+
 const numberFmt = new Intl.NumberFormat('pt-BR')
 const percentFmt = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 })
 
@@ -263,6 +282,8 @@ function App() {
   const [adminPassword, setAdminPassword] = useState('')
   const [newProfileName, setNewProfileName] = useState('')
   const [codexLogin, setCodexLogin] = useState<CodexLoginStatus | null>(null)
+  const [codexRotation, setCodexRotation] = useState<CodexRotationPayload | null>(null)
+  const [rotationError, setRotationError] = useState<string | null>(null)
   const [profilesBusy, setProfilesBusy] = useState(false)
   const codexLoginPopupRef = useRef<Window | null>(null)
 
@@ -341,6 +362,51 @@ function App() {
     }
   }
 
+
+  async function loadCodexRotation() {
+    try {
+      setRotationError(null)
+      const payload = await adminFetch<CodexRotationPayload>('/api/codex-rotation')
+      setCodexRotation(payload)
+    } catch (err) {
+      setRotationError(err instanceof Error ? err.message : 'Erro desconhecido')
+    }
+  }
+
+  async function updateCodexRotationConfig(config: Partial<CodexRotationPayload['config']>) {
+    try {
+      setProfilesBusy(true)
+      setRotationError(null)
+      const payload = await adminFetch<CodexRotationPayload>('/api/codex-rotation/config', {
+        method: 'POST',
+        body: JSON.stringify(config),
+      })
+      setCodexRotation(payload)
+    } catch (err) {
+      setRotationError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
+  async function runCodexRotation(dryRun: boolean) {
+    try {
+      setProfilesBusy(true)
+      setRotationError(null)
+      const payload = await adminFetch<CodexRotationPayload>('/api/codex-rotation/run-once', {
+        method: 'POST',
+        body: JSON.stringify({ force: true, dryRun, reason: dryRun ? 'teste_manual' : 'execucao_manual' }),
+      })
+      setCodexRotation(payload)
+      await loadCodexProfiles()
+      await loadLimits()
+    } catch (err) {
+      setRotationError(err instanceof Error ? err.message : 'Erro desconhecido')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }
+
   function prepareCodexLoginPopup() {
     const popup = window.open('', 'codex-login', 'popup=yes,width=760,height=860')
     codexLoginPopupRef.current = popup
@@ -372,6 +438,7 @@ function App() {
       await loadCodexAdminStatus()
       await loadCodexProfiles()
       await loadCodexLoginStatus()
+      await loadCodexRotation()
     } catch (err) {
       setProfilesError(err instanceof Error ? err.message : 'Erro desconhecido')
     } finally {
@@ -492,6 +559,7 @@ function App() {
     if (!codexAdmin?.authenticated) return
     loadCodexProfiles()
     loadCodexLoginStatus()
+    loadCodexRotation()
   }, [codexAdmin?.authenticated])
 
   useEffect(() => {
@@ -582,7 +650,9 @@ function App() {
               admin={codexAdmin}
               profilesData={profilesData}
               loginStatus={codexLogin}
+              rotationStatus={codexRotation}
               error={profilesError}
+              rotationError={rotationError}
               adminPassword={adminPassword}
               newProfileName={newProfileName}
               busy={profilesBusy}
@@ -594,7 +664,9 @@ function App() {
               onDelete={deleteCodexProfile}
               onStartLogin={startCodexLogin}
               onCancelLogin={cancelCodexLogin}
-              onRefresh={() => { loadCodexProfiles(); loadCodexLoginStatus(); loadLimits() }}
+              onUpdateRotation={updateCodexRotationConfig}
+              onRunRotation={runCodexRotation}
+              onRefresh={() => { loadCodexProfiles(); loadCodexLoginStatus(); loadCodexRotation(); loadLimits() }}
             />
 
             <section className="grid gap-5 lg:grid-cols-3">
@@ -867,7 +939,9 @@ function CodexAccountsPanel({
   admin,
   profilesData,
   loginStatus,
+  rotationStatus,
   error,
+  rotationError,
   adminPassword,
   newProfileName,
   busy,
@@ -879,12 +953,16 @@ function CodexAccountsPanel({
   onDelete,
   onStartLogin,
   onCancelLogin,
+  onUpdateRotation,
+  onRunRotation,
   onRefresh,
 }: {
   admin: CodexAdminStatus | null
   profilesData: CodexProfilesPayload | null
   loginStatus: CodexLoginStatus | null
+  rotationStatus: CodexRotationPayload | null
   error: string | null
+  rotationError: string | null
   adminPassword: string
   newProfileName: string
   busy: boolean
@@ -896,6 +974,8 @@ function CodexAccountsPanel({
   onDelete: (slug: string) => void
   onStartLogin: () => void
   onCancelLogin: () => void
+  onUpdateRotation: (config: Partial<CodexRotationPayload['config']>) => void
+  onRunRotation: (dryRun: boolean) => void
   onRefresh: () => void
 }) {
   return (
@@ -978,7 +1058,7 @@ function CodexAccountsPanel({
                 />
                 <button
                   className="rounded-xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 transition hover:bg-emerald-200 disabled:opacity-50"
-                  disabled={busy || !newProfileName.trim()}
+                  disabled={busy || Boolean(loginStatus?.running) || !newProfileName.trim()}
                   onClick={onSaveCurrent}
                   type="button"
                 >
@@ -1027,6 +1107,52 @@ function CodexAccountsPanel({
                 </div>
               )}
             </section>
+
+            <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 className="font-bold text-white">Rotação automática</h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Troca automaticamente a conta ativa quando o painel detectar limite de 5h/semanal esgotado. Roda no backend/PM2, sem depender desta tela aberta.
+              </p>
+              {rotationError && (
+                <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-100">{rotationError}</div>
+              )}
+              <div className="mt-4 space-y-3 text-sm text-slate-300">
+                <Row label="Status" value={rotationStatus?.config.enabled ? 'Ativa' : 'Desativada'} />
+                <Row label="Agendada" value={rotationStatus?.scheduled ? 'Sim' : 'Nao'} />
+                <Row label="Intervalo" value={`${rotationStatus?.config.intervalSeconds || 60}s`} />
+                <Row label="Limite para trocar" value={`${rotationStatus?.config.thresholdUsedPercent || 99.5}% usado`} />
+                <Row label="Ultima checagem" value={formatDate(rotationStatus?.lastRunAt)} />
+              </div>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  className={`rounded-xl px-4 py-3 font-bold transition disabled:opacity-50 ${rotationStatus?.config.enabled ? 'border border-amber-300/30 text-amber-100 hover:bg-amber-500/10' : 'bg-emerald-300 text-slate-950 hover:bg-emerald-200'}`}
+                  disabled={busy}
+                  onClick={() => onUpdateRotation({ enabled: !rotationStatus?.config.enabled })}
+                  type="button"
+                >
+                  {rotationStatus?.config.enabled ? 'Desativar rotação' : 'Ativar rotação'}
+                </button>
+                <button
+                  className="rounded-xl border border-cyan-300/30 px-4 py-3 font-bold text-cyan-100 transition hover:bg-cyan-300/10 disabled:opacity-50"
+                  disabled={busy}
+                  onClick={() => onRunRotation(true)}
+                  type="button"
+                >
+                  Testar sem trocar
+                </button>
+                <button
+                  className="rounded-xl border border-purple-300/30 px-4 py-3 font-bold text-purple-100 transition hover:bg-purple-300/10 disabled:opacity-50"
+                  disabled={busy || Boolean(loginStatus?.running)}
+                  onClick={() => onRunRotation(false)}
+                  type="button"
+                >
+                  Rodar agora
+                </button>
+              </div>
+              {rotationStatus?.events?.[0] && (
+                <pre className="mt-4 max-h-44 overflow-auto rounded-xl bg-black/30 p-3 text-xs text-slate-300 whitespace-pre-wrap">{JSON.stringify(rotationStatus.events[0], null, 2)}</pre>
+              )}
+            </section>
           </div>
 
           <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -1053,7 +1179,7 @@ function CodexAccountsPanel({
                     <div className="flex shrink-0 gap-2">
                       <button
                         className="rounded-lg bg-cyan-300 px-3 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
-                        disabled={busy || profile.isActive}
+                        disabled={busy || Boolean(loginStatus?.running) || profile.isActive}
                         onClick={() => onActivate(profile.slug)}
                         type="button"
                       >
@@ -1061,7 +1187,7 @@ function CodexAccountsPanel({
                       </button>
                       <button
                         className="rounded-lg border border-red-300/30 px-3 py-2 text-sm font-bold text-red-100 transition hover:bg-red-500/10 disabled:opacity-50"
-                        disabled={busy}
+                        disabled={busy || Boolean(loginStatus?.running) || profile.isActive}
                         onClick={() => onDelete(profile.slug)}
                         type="button"
                       >

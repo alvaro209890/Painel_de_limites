@@ -17,6 +17,8 @@ const CODEX_PROFILES_ROOT = process.env.CODEX_PROFILES_ROOT || path.join(os.home
 const CODEX_PROFILES_DIR = path.join(CODEX_PROFILES_ROOT, 'profiles')
 const CODEX_BACKUPS_DIR = path.join(CODEX_PROFILES_ROOT, 'backups')
 const ADMIN_SECRET_FILE = path.join(CODEX_PROFILES_ROOT, 'admin-secret.json')
+const ROTATION_CONFIG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-config.json')
+const ROTATION_LOG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-events.jsonl')
 const ADMIN_PASSWORD = process.env.LIMITS_PANEL_ADMIN_PASSWORD || readAdminPasswordFromFile()
 const ADMIN_SESSION_SECRET = process.env.LIMITS_PANEL_SESSION_SECRET || readAdminSessionSecretFromFile() || crypto.randomBytes(32).toString('hex')
 
@@ -66,12 +68,20 @@ function parseCookies(cookieHeader = '') {
   )
 }
 
-function setSessionCookie(res, token) {
-  res.setHeader('Set-Cookie', `limits_admin=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/api; Max-Age=86400`)
+function shouldUseSecureCookie(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').toLowerCase()
+  const host = String(req.headers.host || '')
+  return proto === 'https' || host.includes('limites.cursar.space')
 }
 
-function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', 'limits_admin=; HttpOnly; SameSite=Lax; Path=/api; Max-Age=0')
+function setSessionCookie(req, res, token) {
+  const secure = shouldUseSecureCookie(req) ? '; Secure' : ''
+  res.setHeader('Set-Cookie', `limits_admin=${encodeURIComponent(token)}; HttpOnly${secure}; SameSite=Lax; Path=/api; Max-Age=86400`)
+}
+
+function clearSessionCookie(req, res) {
+  const secure = shouldUseSecureCookie(req) ? '; Secure' : ''
+  res.setHeader('Set-Cookie', `limits_admin=; HttpOnly${secure}; SameSite=Lax; Path=/api; Max-Age=0`)
 }
 
 function signSession(timestamp) {
@@ -560,16 +570,231 @@ function collectPcMetrics() {
   }
 }
 
+
+// ─── Codex auto-rotation ─────────────────────────────────────────
+
+const DEFAULT_ROTATION_CONFIG = {
+  enabled: false,
+  intervalSeconds: 60,
+  cooldownSeconds: 300,
+  thresholdUsedPercent: 99.5,
+  notifyOnly: false,
+  preferredOrder: [],
+  skipSlugs: [],
+}
+
+let rotationTimer = null
+let rotationRunning = false
+let rotationLastRunAt = 0
+let rotationLastResult = null
+
+function readRotationConfig() {
+  ensureProfileDirs()
+  const saved = readJson(ROTATION_CONFIG_FILE) || {}
+  return {
+    ...DEFAULT_ROTATION_CONFIG,
+    ...saved,
+    intervalSeconds: Math.max(30, Math.min(3600, Number(saved.intervalSeconds || DEFAULT_ROTATION_CONFIG.intervalSeconds))),
+    cooldownSeconds: Math.max(60, Math.min(86400, Number(saved.cooldownSeconds || DEFAULT_ROTATION_CONFIG.cooldownSeconds))),
+    thresholdUsedPercent: Math.max(50, Math.min(100, Number(saved.thresholdUsedPercent || DEFAULT_ROTATION_CONFIG.thresholdUsedPercent))),
+    preferredOrder: Array.isArray(saved.preferredOrder) ? saved.preferredOrder.filter(Boolean).map(String) : [],
+    skipSlugs: Array.isArray(saved.skipSlugs) ? saved.skipSlugs.filter(Boolean).map(String) : [],
+    updatedAt: saved.updatedAt || null,
+  }
+}
+
+function writeRotationConfig(config) {
+  ensureProfileDirs()
+  const current = readRotationConfig()
+  const next = {
+    ...current,
+    ...config,
+    intervalSeconds: Math.max(30, Math.min(3600, Number(config.intervalSeconds ?? current.intervalSeconds))),
+    cooldownSeconds: Math.max(60, Math.min(86400, Number(config.cooldownSeconds ?? current.cooldownSeconds))),
+    thresholdUsedPercent: Math.max(50, Math.min(100, Number(config.thresholdUsedPercent ?? current.thresholdUsedPercent))),
+    preferredOrder: Array.isArray(config.preferredOrder) ? config.preferredOrder.filter(Boolean).map(String) : current.preferredOrder,
+    skipSlugs: Array.isArray(config.skipSlugs) ? config.skipSlugs.filter(Boolean).map(String) : current.skipSlugs,
+    updatedAt: new Date().toISOString(),
+  }
+  atomicWriteJson(ROTATION_CONFIG_FILE, next)
+  scheduleCodexRotation()
+  return next
+}
+
+function appendRotationEvent(event) {
+  ensureProfileDirs()
+  const payload = { at: new Date().toISOString(), ...event }
+  fs.appendFileSync(ROTATION_LOG_FILE, `${JSON.stringify(payload)}\n`, { mode: 0o600 })
+  chmodPrivate(ROTATION_LOG_FILE)
+  return payload
+}
+
+function readRotationEvents(limit = 30) {
+  try {
+    if (!fs.existsSync(ROTATION_LOG_FILE)) return []
+    return fs.readFileSync(ROTATION_LOG_FILE, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .slice(-Math.max(1, Math.min(200, Number(limit) || 30)))
+      .map((line) => {
+        try { return JSON.parse(line) } catch { return { raw: line } }
+      })
+      .reverse()
+  } catch {
+    return []
+  }
+}
+
+function usageExhaustionReasons(normalized, config = readRotationConfig()) {
+  const reasons = []
+  const usage = normalized?.usage || normalized
+  if (!usage) return ['sem_dados_de_uso']
+  if (usage.status?.limitReached) reasons.push(`limite_bloqueado:${usage.status.reachedType || 'rate_limit'}`)
+  if (usage.status?.allowed === false) reasons.push('uso_nao_permitido')
+  for (const [key, window] of Object.entries(usage.windows || {})) {
+    if (!window) continue
+    const used = Number(window.usedPercent)
+    const remaining = Number(window.remainingPercent)
+    if (Number.isFinite(used) && used >= config.thresholdUsedPercent) reasons.push(`${key}_usado_${used}%`)
+    if (Number.isFinite(remaining) && remaining <= 0) reasons.push(`${key}_sem_restante`)
+  }
+  return [...new Set(reasons)]
+}
+
+function orderRotationCandidates(profiles, config, activeSlug) {
+  const skip = new Set([...(config.skipSlugs || []), activeSlug].filter(Boolean))
+  const bySlug = new Map(profiles.map((profile) => [profile.slug, profile]))
+  const ordered = []
+  for (const slug of config.preferredOrder || []) {
+    const profile = bySlug.get(slug)
+    if (profile && !skip.has(slug)) ordered.push(profile)
+  }
+  for (const profile of profiles) {
+    if (!skip.has(profile.slug) && !ordered.some((item) => item.slug === profile.slug)) ordered.push(profile)
+  }
+  return ordered
+}
+
+async function checkProfileUsage(profile) {
+  const authPath = path.join(profilePath(profile.slug), 'auth.json')
+  const raw = await fetchCodexUsage(authPath)
+  return normalizeUsage(raw, authPath)
+}
+
+async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'manual' } = {}) {
+  if (rotationRunning) return { ok: false, skipped: true, reason: 'rotacao_ja_em_execucao', lastResult: rotationLastResult }
+  rotationRunning = true
+  try {
+    const config = readRotationConfig()
+    const now = Date.now()
+    if (!force && now - rotationLastRunAt < config.cooldownSeconds * 1000) {
+      return { ok: true, skipped: true, reason: 'cooldown', nextAllowedAt: new Date(rotationLastRunAt + config.cooldownSeconds * 1000).toISOString() }
+    }
+    if (codexLoginSession?.child && codexLoginSession.exitCode === null && !codexLoginSession.error) {
+      return { ok: true, skipped: true, reason: 'login_codex_em_andamento' }
+    }
+
+    const profilesState = listCodexProfiles()
+    const activeProfile = profilesState.profiles.find((profile) => profile.isActive) || null
+    let activeUsage = null
+    let activeReasons = []
+    try {
+      activeUsage = normalizeUsage(await fetchCodexUsage(CODEX_AUTH_PATH), CODEX_AUTH_PATH)
+      activeReasons = usageExhaustionReasons(activeUsage, config)
+    } catch (error) {
+      activeReasons = [`erro_conta_ativa:${error.message}`]
+    }
+
+    if (activeReasons.length === 0 && !force) {
+      const result = { ok: true, rotated: false, reason: 'conta_ativa_ainda_tem_limite', active: profilesState.active, checkedAt: new Date().toISOString() }
+      rotationLastResult = result
+      return result
+    }
+
+    const candidates = orderRotationCandidates(profilesState.profiles, config, activeProfile?.slug)
+    const checked = []
+    for (const candidate of candidates) {
+      try {
+        const candidateUsage = await checkProfileUsage(candidate)
+        const reasons = usageExhaustionReasons(candidateUsage, config)
+        checked.push({ slug: candidate.slug, name: candidate.name, emailHint: candidate.emailHint, planType: candidate.planType, available: reasons.length === 0, reasons })
+        if (reasons.length === 0) {
+          const eventBase = {
+            type: dryRun || config.notifyOnly ? 'rotation-dry-run' : 'rotation',
+            trigger: reason,
+            from: activeProfile ? { slug: activeProfile.slug, name: activeProfile.name, emailHint: activeProfile.emailHint } : profilesState.active,
+            to: { slug: candidate.slug, name: candidate.name, emailHint: candidate.emailHint, planType: candidate.planType },
+            activeReasons,
+            checked,
+          }
+          if (dryRun || config.notifyOnly) {
+            const event = appendRotationEvent({ ...eventBase, note: dryRun ? 'dry_run_sem_ativar' : 'notifyOnly_sem_ativar' })
+            const result = { ok: true, rotated: false, dryRun: true, event, checkedAt: new Date().toISOString() }
+            rotationLastResult = result
+            rotationLastRunAt = now
+            return result
+          }
+          const activation = activateCodexProfile(candidate.slug)
+          const event = appendRotationEvent({ ...eventBase, activation: { backupPath: activation.backupPath, active: activation.active } })
+          const result = { ok: true, rotated: true, event, checkedAt: new Date().toISOString() }
+          rotationLastResult = result
+          rotationLastRunAt = now
+          return result
+        }
+      } catch (error) {
+        checked.push({ slug: candidate.slug, name: candidate.name, emailHint: candidate.emailHint, available: false, reasons: [`erro:${error.message}`] })
+      }
+    }
+
+    const event = appendRotationEvent({ type: 'rotation-failed', trigger: reason, from: activeProfile, activeReasons, checked, note: 'nenhum_perfil_disponivel' })
+    const result = { ok: false, rotated: false, error: 'Nenhum perfil Codex disponivel para rotacao', event, checkedAt: new Date().toISOString() }
+    rotationLastResult = result
+    rotationLastRunAt = now
+    return result
+  } finally {
+    rotationRunning = false
+  }
+}
+
+function scheduleCodexRotation() {
+  if (rotationTimer) {
+    clearInterval(rotationTimer)
+    rotationTimer = null
+  }
+  const config = readRotationConfig()
+  if (!config.enabled) return
+  rotationTimer = setInterval(() => {
+    runCodexRotationOnce({ reason: 'intervalo_automatico' }).catch((error) => {
+      const event = appendRotationEvent({ type: 'rotation-error', error: error.message })
+      rotationLastResult = { ok: false, error: error.message, event, checkedAt: new Date().toISOString() }
+    })
+  }, config.intervalSeconds * 1000)
+}
+
+function rotationStatusPayload() {
+  const config = readRotationConfig()
+  return {
+    ok: true,
+    config,
+    running: rotationRunning,
+    scheduled: Boolean(rotationTimer),
+    lastRunAt: rotationLastRunAt ? new Date(rotationLastRunAt).toISOString() : null,
+    lastResult: rotationLastResult,
+    events: readRotationEvents(30),
+  }
+}
+
 // ─── Codex API ────────────────────────────────────────────────────
 
-async function fetchCodexUsage() {
-  const auth = readJson(CODEX_AUTH_PATH)
+async function fetchCodexUsage(authPath = CODEX_AUTH_PATH) {
+  const auth = readJson(authPath)
   const tokens = auth.tokens || {}
   const accessToken = tokens.access_token
   const accountId = tokens.account_id
 
   if (!accessToken) {
-    throw new Error('Codex nao esta logado em ~/.codex/auth.json')
+    throw new Error(`Codex nao esta logado em ${authPath}`)
   }
 
   const response = await fetch('https://chatgpt.com/backend-api/wham/usage', {
@@ -638,7 +863,7 @@ function readLocalMetrics() {
   return { byModel, recentThreads, totals }
 }
 
-function normalizeUsage(usage) {
+function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
   const primary = usage.rate_limit?.primary_window || null
   const secondary = usage.rate_limit?.secondary_window || null
   const now = Math.floor(Date.now() / 1000)
@@ -646,7 +871,7 @@ function normalizeUsage(usage) {
   return {
     checkedAt: new Date().toISOString(),
     account: {
-      email: redactEmail(usage.email || extractEmailFromIdToken(readJson(CODEX_AUTH_PATH))),
+      email: redactEmail(usage.email || extractEmailFromIdToken(readJson(authPath))),
       planType: usage.plan_type,
       userId: usage.user_id,
     },
@@ -762,15 +987,15 @@ app.post('/api/codex-profiles/login', requireAdminAction, (req, res) => {
     if (!ADMIN_PASSWORD || !safeTimingEqual(provided, ADMIN_PASSWORD)) {
       return res.status(401).json({ error: 'Senha admin invalida' })
     }
-    setSessionCookie(res, createSessionToken())
+    setSessionCookie(req, res, createSessionToken())
     res.json({ ok: true, authenticated: true })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
 })
 
-app.post('/api/codex-profiles/logout', requireAdmin, requireAdminAction, (_req, res) => {
-  clearSessionCookie(res)
+app.post('/api/codex-profiles/logout', requireAdmin, requireAdminAction, (req, res) => {
+  clearSessionCookie(req, res)
   res.json({ ok: true, authenticated: false })
 })
 
@@ -827,6 +1052,29 @@ app.post('/api/codex-login/cancel', requireAdmin, requireAdminAction, (_req, res
   res.json(cancelCodexLoginProcess())
 })
 
+
+app.get('/api/codex-rotation', requireAdmin, (_req, res) => {
+  res.json(rotationStatusPayload())
+})
+
+app.post('/api/codex-rotation/config', requireAdmin, requireAdminAction, (req, res) => {
+  try {
+    const config = writeRotationConfig(req.body || {})
+    res.json({ ok: true, config, ...rotationStatusPayload(), checkedAt: new Date().toISOString() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.post('/api/codex-rotation/run-once', requireAdmin, requireAdminAction, async (req, res) => {
+  try {
+    const result = await runCodexRotationOnce({ force: Boolean(req.body?.force), dryRun: Boolean(req.body?.dryRun), reason: req.body?.reason || 'manual' })
+    res.json({ ok: true, result, ...rotationStatusPayload(), checkedAt: new Date().toISOString() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
 // ─── Error handling middleware ──────────────────────────────────
 
 app.use((err, _req, res, _next) => {
@@ -860,6 +1108,7 @@ function startStaticServer() {
       'x-admin-action': req.headers['x-admin-action'] || '',
       origin: req.headers.origin || '',
       host: req.headers.host || '',
+      'x-forwarded-proto': req.headers['x-forwarded-proto'] || '',
     }
     fetch(target, {
       method: req.method,
@@ -902,6 +1151,8 @@ function startStaticServer() {
 }
 
 // ─── Graceful startup ───────────────────────────────────────────
+
+scheduleCodexRotation()
 
 const server = app.listen(API_PORT, '127.0.0.1', () => {
   console.log(`Painel de limites API em http://127.0.0.1:${API_PORT}`)

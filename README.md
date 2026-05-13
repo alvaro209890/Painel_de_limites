@@ -23,6 +23,7 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 - Deletar perfis
 - Login direto pelo navegador via Codex CLI
 - Backup automático do auth.json antes de trocar de conta
+- Rotação automática entre contas quando o limite da janela principal/semanal esgota
 - Proteção por senha admin local
 
 ### 📈 Aba Métricas do PC
@@ -57,6 +58,9 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 | `GET` | `/api/codex-login/status` | Status do processo de login Codex CLI |
 | `POST` | `/api/codex-login/start` | Iniciar login Codex CLI pelo painel |
 | `POST` | `/api/codex-login/cancel` | Cancelar login em andamento |
+| `GET` | `/api/codex-rotation` | Status/config/eventos da rotação automática |
+| `POST` | `/api/codex-rotation/config` | Atualizar configuração da rotação automática |
+| `POST` | `/api/codex-rotation/run-once` | Executar teste ou rotação manual |
 
 ---
 
@@ -115,6 +119,8 @@ Ou use um tunnel persistente apontando para o domínio `limites.cursar.space`.
 | `~/.config/codex-profiles/profiles/<slug>/auth.json` | Perfis salvos |
 | `~/.config/codex-profiles/backups/` | Backups automáticos |
 | `~/.config/codex-profiles/admin-secret.json` | Senha admin local |
+| `~/.config/codex-profiles/rotation-config.json` | Configuração da rotação automática |
+| `~/.config/codex-profiles/rotation-events.jsonl` | Log de eventos da rotação |
 
 ### Fluxo recomendado
 
@@ -123,6 +129,28 @@ Ou use um tunnel persistente apontando para o domínio `limites.cursar.space`.
 3. Abra o link/código retornado pelo CLI
 4. Depois do login, salve a conta ativa como perfil ("Salvar como perfil")
 5. Use **"Ativar"** em um perfil salvo para copiar o `auth.json` dele para `~/.codex/auth.json`
+6. Opcional: ative **Rotação automática** para o backend alternar contas quando detectar limite esgotado
+
+
+### Rotação automática de contas
+
+A rotação automática roda no backend/PM2 e não depende do navegador aberto. Quando a conta ativa aparece bloqueada, não permitida, ou com janela de uso acima do limite configurado, o painel testa os perfis salvos e ativa o primeiro que ainda tiver limite disponível.
+
+Configuração padrão:
+
+```json
+{
+  "enabled": false,
+  "intervalSeconds": 60,
+  "cooldownSeconds": 300,
+  "thresholdUsedPercent": 99.5,
+  "notifyOnly": false,
+  "preferredOrder": [],
+  "skipSlugs": []
+}
+```
+
+Documentação completa: [`docs/codex-auto-rotation.md`](docs/codex-auto-rotation.md).
 
 ### Variáveis de ambiente
 
