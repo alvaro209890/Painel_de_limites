@@ -765,42 +765,56 @@ def _disks_linux():
 
 
 def _disks_windows():
-    """Discos via wmic no Windows."""
-    out = safe_shell(
-        'wmic LogicalDisk where "DriveType=3" get DeviceID,Size,FreeSpace /VALUE',
-        timeout=5,
+    """Discos no Windows via PowerShell (mais confiável que wmic)."""
+    # PowerShell retorna JSON estruturado com todos os discos
+    ps_cmd = (
+        'powershell -Command "'
+        'Get-CimInstance Win32_LogicalDisk '
+        '-Filter \"DriveType = 3\" '
+        '| Select-Object DeviceID, @{N=\'SizeBytes\';E={$_.Size}}, '
+        '@{N=\'FreeBytes\';E={$_.FreeSpace}} '
+        '| ConvertTo-Json -Compress'
+        '"'
     )
+    out = safe_shell(ps_cmd, timeout=5)
     if not out:
         return []
 
+    import json as _json
+    try:
+        data = _json.loads(out)
+    except (_json.JSONDecodeError, Exception):
+        return []
+
+    # PowerShell pode retornar objeto único ou array
+    if isinstance(data, dict):
+        data = [data]
+
     disks = []
-    current = {}
-    for line in out.split("\n"):
-        line = line.strip()
-        if not line:
-            if current.get("DeviceID"):
-                device = current.get("DeviceID", "?")
-                size_b = current.get("Size")
-                free_b = current.get("FreeSpace")
-                try:
-                    size_gb = round(int(size_b) / 1073741824, 1) if size_b else 0
-                    free_gb = round(int(free_b) / 1073741824, 1) if free_b else 0
-                    used_gb = round(size_gb - free_gb, 1)
-                    pcent = round((used_gb / size_gb) * 100) if size_gb > 0 else 0
-                    label = "SSD (sistema)" if device.endswith("C:") else \
-                            device.rstrip(":").strip()
-                    disks.append({
-                        "device": device, "fsType": "ntfs", "mount": f"{device}\\",
-                        "sizeGb": size_gb, "usedGb": used_gb, "freeGb": free_gb,
-                        "percent": f"{pcent}%", "label": label,
-                    })
-                except (ValueError, TypeError):
-                    pass
-                current = {}
+    for disk in data:
+        device = disk.get("DeviceID", "")
+        size_b = disk.get("SizeBytes")
+        free_b = disk.get("FreeBytes")
+
+        if not device or not size_b:
             continue
-        if "=" in line:
-            k, v = line.split("=", 1)
-            current[k.strip()] = v.strip()
+
+        try:
+            size_b = int(size_b)
+            free_b = int(free_b) if free_b else 0
+            size_gb = round(size_b / 1073741824, 1)
+            free_gb = round(free_b / 1073741824, 1)
+            used_gb = round(size_gb - free_gb, 1)
+            pcent = round((used_gb / size_gb) * 100) if size_gb > 0 else 0
+            label = "SSD (sistema)" if device.rstrip(":") == "C" else \
+                    device.rstrip(":").strip()
+            disks.append({
+                "device": device, "fsType": "ntfs", "mount": f"{device}\\",
+                "sizeGb": size_gb, "usedGb": used_gb, "freeGb": free_gb,
+                "percent": f"{pcent}%", "label": label,
+            })
+        except (ValueError, TypeError):
+            continue
 
     return disks
 
