@@ -94,6 +94,105 @@ python $env:USERPROFILE\limits-agent.py --uninstall
 
 ---
 
+## Instalação no WSL (Windows Subsystem for Linux)
+
+Se o PC Windows tiver WSL, instalar o agent **dentro do WSL** é mais
+robusto que a Scheduled Task. O agent ganha systemd nativo.
+
+### Pelo PowerShell (uma linha no WSL)
+
+```powershell
+wsl -d Ubuntu -e bash -c "
+sudo curl -sSLo /usr/local/bin/limits-agent \
+  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
+sudo chmod +x /usr/local/bin/limits-agent
+limits-agent --setup
+sudo limits-agent --install
+"
+```
+
+O assistente `--setup` vai pedir os mesmos dados (URL, ID, token).
+
+### Entrando direto no WSL
+
+```powershell
+wsl -d Ubuntu
+```
+
+Dentro do WSL (bash):
+
+```bash
+sudo curl -sSLo /usr/local/bin/limits-agent \
+  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
+sudo chmod +x /usr/local/bin/limits-agent
+limits-agent --setup
+sudo limits-agent --install
+```
+
+### Vantagens do WSL vs Windows puro
+
+| Aspecto | WSL (recomendado) | Windows puro |
+|---------|-------------------|--------------|
+| Serviço | systemd (nativo) | Scheduled Task |
+| Auto-restart | `Restart=always` | Precisa de script |
+| Logs | `journalctl -u limits-agent` | Sem logs fáceis |
+| Atualizar | `sudo limits-agent --install` | Re-baixar script |
+| Acesso remoto | SSH via Tailscale direto | PowerShell remoto |
+
+---
+
+## Tailscale — acesso remoto ao PC
+
+Com Tailscale, você consegue acessar o PC remoto por SSH de qualquer
+lugar, sem precisar de IP público ou configuração de roteador.
+
+### Verificar se Tailscale está instalado
+
+```bash
+tailscale status
+```
+
+### Acessar o PC remoto via SSH
+
+```bash
+ssh usuario@100.102.60.73
+```
+
+Substitua `usuario` pelo nome de usuário do PC remoto e o IP pelo IP
+Tailscale da máquina (aparece em `tailscale status`).
+
+### Instalar Tailscale (se não tiver)
+
+**Linux:**
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+**Windows:** Baixe de https://tailscale.com/download e faça login
+com a mesma conta Google/Microsoft do servidor.
+
+---
+
+## Rodar sem instalar (--run)
+
+Útil para testar rapidamente ou quando não quer criar um serviço permanente.
+Usa `pythonw.exe` no Windows (sem console) e `nohup` no Linux.
+
+**Windows:**
+```powershell
+python $env:USERPROFILE\limits-agent.py --run
+```
+O processo roda invisível em background. Pode fechar o PowerShell.
+Para parar: Gerenciador de Tarefas → encerrar `pythonw.exe`.
+
+**Linux:**
+```bash
+nohup /usr/local/bin/limits-agent --run &
+```
+
+---
+
 ## Instalação no Linux
 
 ### Setup automático (recomendado)
@@ -288,8 +387,9 @@ E no PC remoto use `"machine_id": "pc-novo"` no config do agent.
 | `limits-agent` | Modo normal — coleta e envia heartbeats |
 | `limits-agent --setup` | Assistente interativo para criar config |
 | `limits-agent --status` | Mostra status do serviço e config atual |
-| `limits-agent --uninstall` | Para e remove o serviço systemd |
-| `limits-agent --install` | Cria e ativa serviço systemd (precisa de sudo) |
+| `limits-agent --run` | Roda em background (Windows: pythonw, Linux: nohup) |
+| `limits-agent --uninstall` | Para e remove o serviço |
+| `limits-agent --install` | Cria e ativa serviço (sudo no Linux, Admin no Windows) |
 | `limits-agent --help` | Mostra todas as opções |
 
 Flags diretas (criam config automaticamente):
