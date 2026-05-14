@@ -20,10 +20,81 @@ envia periodicamente para o servidor do Painel de Limites.
 ## Dependências
 
 - **Python 3** (stdlib apenas — sem pip necessário)
-- **Linux** com `/proc`, `df` e (opcional) `sensors` para temperatura
+- **Linux:** `/proc`, `df` e (opcional) `sensors` para temperatura
+- **Windows:** Python 3 instalado + permissão de Administrador para `--install`
 - Acesso HTTP ao servidor do Painel
 
-## Instalação no PC remoto
+---
+
+## Instalação no Windows (PC com Windows)
+
+### Pré-requisito: instalar Python 3
+
+Se não tiver Python instalado, baixe do site oficial:
+https://www.python.org/downloads/
+
+**Importante:** na instalação, marque **"Add Python to PATH"**.
+
+Para verificar se instalou certo, abra o **PowerShell** e digite:
+```powershell
+python --version
+```
+
+### Setup automático (recomendado)
+
+Abra o **PowerShell como Administrador** (clique direito → Executar como administrador):
+
+```powershell
+# 1. Baixar o script
+curl.exe -sSLo $env:USERPROFILE\limits-agent.py `
+  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
+
+# 2. Configurar (assistente interativo)
+python $env:USERPROFILE\limits-agent.py --setup
+
+# 3. Instalar como serviço (Scheduled Task — auto-start ao logar)
+python $env:USERPROFILE\limits-agent.py --install
+```
+
+O PowerShell vai perguntar a URL, o ID da máquina e o token. Depois disso o agent já começa a rodar e vai iniciar automaticamente sempre que você ligar o PC e logar.
+
+### Setup via flags (uma linha)
+
+Se já sabe os parâmetros:
+```powershell
+python $env:USERPROFILE\limits-agent.py --server-url https://limites.cursar.space `
+                                        --machine-id pc-trabalho `
+                                        --secret SEU_TOKEN
+python $env:USERPROFILE\limits-agent.py --install
+```
+
+### Opcional: manter o script em um local fixo
+
+Depois de testar, mova o script para uma pasta de programas:
+```powershell
+move $env:USERPROFILE\limits-agent.py C:\ProgramData\limits-agent.py
+# E use o caminho novo nos comandos:
+python "C:\ProgramData\limits-agent.py" --setup
+```
+
+### Verificar se está rodando
+
+```powershell
+python $env:USERPROFILE\limits-agent.py --status
+```
+
+Deve mostrar o status "Ready" ou "Running" na Scheduled Task.
+
+### Parar / remover
+
+```powershell
+# PowerShell como Administrador
+python $env:USERPROFILE\limits-agent.py --uninstall
+```
+
+---
+
+## Instalação no Linux
 
 ### Setup automático (recomendado)
 
@@ -252,6 +323,8 @@ cat ~/.config/codex-profiles/agents-heartbeats.json
 curl -sS https://limites.cursar.space/api/machines -H 'Cookie: limits_admin=...' | jq '.machines[] | {id, status, hostname, agent}'
 ```
 
+| `\` | Caractere de continuação de linha no PowerShell (substitui `\` do bash) |
+
 ## Troubleshooting
 
 | Problema | Causa provável | Solução |
@@ -261,4 +334,8 @@ curl -sS https://limites.cursar.space/api/machines -H 'Cookie: limits_admin=...'
 | `HTTP 400` | Payload inválido | Verificar `machine_id` e `metrics` |
 | Conexão recusada | Servidor/Cloudflare Tunnel offline | Verificar `pm2 status` e tunnel |
 | Sem heartbeat no painel | TTL de 120s expirou | Verificar se agent está rodando |
-| `sensors` sem dados | Pacote lm-sensors não instalado | `sudo apt install lm-sensors` (opcional) |
+| `sensors` sem dados (Linux) | Pacote lm-sensors não instalado | `sudo apt install lm-sensors` (opcional) |
+| `'python' não encontrado` (Windows) | Python não está no PATH | Reinstalar Python marcando "Add to PATH" |
+| `Acesso negado` (Windows) | PowerShell sem Admin | Fechar e abrir como Administrador |
+| Scheduled Task não inicia (Windows) | Task agendada desabilitada | `schtasks /Change /TN "LimitsAgent" /ENABLE` |
+| Erro `403` no heartbeat (Windows) | Firewall/Proxy bloqueando saída | Verificar conectividade com `curl.exe`
