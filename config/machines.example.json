@@ -1,0 +1,23 @@
+[
+  {
+    "id": "pc-servidor",
+    "name": "PC servidor",
+    "role": "server",
+    "hostname": "server-desktop",
+    "notes": "Máquina onde rodam Hermes, painel e serviços locais"
+  },
+  {
+    "id": "pc-trabalho",
+    "name": "PC trabalho",
+    "role": "work",
+    "hostname": null,
+    "notes": "Aguardando instalação do agent"
+  },
+  {
+    "id": "pc-reserva",
+    "name": "PC reserva",
+    "role": "reserve",
+    "hostname": null,
+    "notes": "Aguardando instalação do agent"
+  }
+]

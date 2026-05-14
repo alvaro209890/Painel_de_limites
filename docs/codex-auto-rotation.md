@@ -4,14 +4,17 @@ Este documento descreve a rotação automática de perfis Codex implementada no 
 
 ## Objetivo
 
-Quando a conta Codex ativa chega no limite de uso da janela principal ou secundária, o backend tenta encontrar outro perfil salvo com limite disponível e ativa esse perfil automaticamente, sem depender do navegador aberto e sem bloquear o Hermes.
+Quando a conta Codex CLI ativa chega no limite de uso da janela principal ou secundária, o backend tenta encontrar outro perfil salvo com limite disponível e ativa esse perfil automaticamente.
 
-A rotação roda dentro do processo Node/PM2 `painel-limites`.
+A rotação roda dentro do processo Node/PM2 `painel-limites` e altera apenas `~/.codex/auth.json`.
+
+Ela **não altera** `~/.hermes/auth.json`, que é a credencial usada pelo Hermes/assistente.
 
 ## Arquivos usados
 
-- `~/.codex/auth.json`: conta Codex ativa usada pelo CLI.
-- `~/.config/codex-profiles/profiles/<slug>/auth.json`: perfis salvos.
+- `~/.codex/auth.json`: conta Codex CLI ativa.
+- `~/.hermes/auth.json`: credencial usada pelo Hermes/assistente; apenas exibida para comparação, não é alterada pela rotação.
+- `~/.config/codex-profiles/profiles/<slug>/auth.json`: perfis salvos da CLI.
 - `~/.config/codex-profiles/rotation-config.json`: configuração da rotação.
 - `~/.config/codex-profiles/rotation-events.jsonl`: log de eventos da rotação.
 - `~/.config/codex-profiles/backups/`: backups feitos antes de ativar outro perfil.
@@ -108,7 +111,11 @@ curl -sS https://limites.cursar.space/api/codex-rotation/run-once \
 
 ## Interface
 
-Na seção **Contas Codex**, após login admin, existe o card **Rotação automática** com:
+Na seção **Contas Codex / Hermes**, após login admin, existem cards separados:
+
+- **Hermes / este assistente:** mostra a credencial usada pelo Hermes em `~/.hermes/auth.json`.
+- **Codex CLI:** mostra a conta ativa da CLI em `~/.codex/auth.json`.
+- **Rotação automática Codex CLI:**
 
 - status ativa/desativada;
 - agendamento;

@@ -1,6 +1,13 @@
 # Hermes agent plans
 .hermes/
 
+# Local runtime configuration — keep real machine/project inventory private
+config/*.json
+!config/*.example.json
+.env
+.env.*
+!.env.example
+
 # Logs
 logs
 *.log

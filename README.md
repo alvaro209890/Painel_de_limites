@@ -8,7 +8,15 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 
 ## Funcionalidades
 
-### 📊 Aba Codex (Limites da conta OpenAI Codex)
+### 🧭 Central DevOps Pessoal
+- **Módulo Máquinas:** PC servidor com métricas reais; PC trabalho e PC reserva cadastrados como offline até instalação do agent.
+- **Módulo IA:** OpenAI/Codex CLI, Hermes OpenAI Codex, DeepSeek e métricas locais por modelo.
+- **Módulo Contas Codex/Hermes:** mostra a conta usada pelo Hermes (`~/.hermes/auth.json`) separada da conta do Codex CLI (`~/.codex/auth.json`), além de login CLI, perfis salvos, ativação de contas com backup e rotação automática da CLI.
+- **Módulo Projetos:** serviços, portas, healthchecks, deploy target e links públicos.
+- **Módulo Alertas:** disco cheio, saldo baixo, limite de IA alto, PC offline e serviço caído.
+- **Login admin global:** dados sensíveis não são carregados sem autenticação.
+
+### 📊 Módulo IA / Codex
 - Limite da janela **principal** (5 horas) — percentual usado e restante
 - Limite da **janela secundária** (semanal) — percentual usado e restante
 - Status de créditos e balance
@@ -16,28 +24,24 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 - Métricas de uso por modelo (tokens, threads)
 - Atualização automática a cada 60 segundos
 
-### ⚙️ Aba Contas Codex (Gerenciamento de perfis)
-- Sistema de perfis para múltiplas contas Codex
-- Salvar a conta atualmente logada como um perfil
-- Ativar um perfil salvo (copia auth.json)
-- Deletar perfis
-- Login direto pelo navegador via Codex CLI
-- Backup automático do auth.json antes de trocar de conta
-- Rotação automática entre contas quando o limite da janela principal/semanal esgota
-- Proteção por senha admin local
-
-### 📈 Aba Métricas do PC
+### 📈 Módulo Máquinas
 - **CPU:** modelo, núcleos, uso percentual, load average
 - **RAM:** total, usado, livre
 - **Disco:** dispositivos, tamanho, uso
 - **Temperatura:** sensores disponíveis
 - **Uptime** do servidor
 
-### 🤖 Aba DeepSeek
-- Saldo atual da conta DeepSeek
-- Breakdown: saldo concedido vs. creditado
-- Status de disponibilidade
-- Lê a chave do `.env` do Hermes Agent
+### 🚀 Módulo Projetos
+- Status por PM2 e/ou HTTP healthcheck
+- Porta local, link público e destino de deploy
+- Configuração em `config/projects.json`
+
+### 🚨 Módulo Alertas
+- PCs offline
+- Discos acima de 80%/90%
+- Saldo DeepSeek baixo
+- Limite principal Codex acima de 95%
+- Projetos offline
 
 ---
 
@@ -45,22 +49,27 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 
 | Método | Rota | Descrição |
 |--------|------|-----------|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/limits` | Limites Codex (wham API + SQLite local) |
-| `GET` | `/api/pc-metrics` | Métricas do servidor (CPU, RAM, disco, temp) |
-| `GET` | `/api/deepseek` | Saldo da DeepSeek |
-| `GET` | `/api/codex-profiles` | Lista perfis salvos |
+| `GET` | `/api/health` | Health check público |
+| `GET` | `/api/dashboard` | Payload agregado dos módulos *(admin)* |
+| `GET` | `/api/machines` | Máquinas cadastradas e métricas *(admin)* |
+| `GET` | `/api/projects` | Serviços/projetos e status *(admin)* |
+| `GET` | `/api/alerts` | Alertas derivados *(admin)* |
+| `GET` | `/api/limits` | Limites Codex (wham API + SQLite local) *(admin)* |
+| `GET` | `/api/pc-metrics` | Métricas do servidor (CPU, RAM, disco, temp) *(admin)* |
+| `GET` | `/api/deepseek` | Saldo da DeepSeek *(admin)* |
+| `GET` | `/api/codex-profiles/status` | Status de autenticação admin |
 | `POST` | `/api/codex-profiles/login` | Autenticar como admin |
 | `POST` | `/api/codex-profiles/logout` | Deslogar admin |
-| `POST` | `/api/codex-profiles/save-current` | Salvar conta ativa como perfil |
-| `POST` | `/api/codex-profiles/:slug/activate` | Ativar um perfil salvo |
-| `DELETE` | `/api/codex-profiles/:slug` | Deletar um perfil |
-| `GET` | `/api/codex-login/status` | Status do processo de login Codex CLI |
-| `POST` | `/api/codex-login/start` | Iniciar login Codex CLI pelo painel |
-| `POST` | `/api/codex-login/cancel` | Cancelar login em andamento |
-| `GET` | `/api/codex-rotation` | Status/config/eventos da rotação automática |
-| `POST` | `/api/codex-rotation/config` | Atualizar configuração da rotação automática |
-| `POST` | `/api/codex-rotation/run-once` | Executar teste ou rotação manual |
+| `GET` | `/api/codex-profiles` | Lista perfis salvos *(admin)* |
+| `POST` | `/api/codex-profiles/save-current` | Salvar conta ativa como perfil *(admin)* |
+| `POST` | `/api/codex-profiles/:slug/activate` | Ativar um perfil salvo *(admin)* |
+| `DELETE` | `/api/codex-profiles/:slug` | Deletar um perfil *(admin)* |
+| `GET` | `/api/codex-login/status` | Status do processo de login Codex CLI *(admin)* |
+| `POST` | `/api/codex-login/start` | Iniciar login Codex CLI pelo painel *(admin)* |
+| `POST` | `/api/codex-login/cancel` | Cancelar login em andamento *(admin)* |
+| `GET` | `/api/codex-rotation` | Status/config/eventos da rotação automática *(admin)* |
+| `POST` | `/api/codex-rotation/config` | Atualizar configuração da rotação automática *(admin)* |
+| `POST` | `/api/codex-rotation/run-once` | Executar teste ou rotação manual *(admin)* |
 
 ---
 
@@ -106,6 +115,60 @@ Ou use um tunnel persistente apontando para o domínio `limites.cursar.space`.
 - **Métricas locais:** `~/.codex/state_5.sqlite`, tabela `threads`
 - **Saldo DeepSeek:** `https://api.deepseek.com/v1/user/balance` (lê chave de `~/.hermes/.env`)
 - **Métricas do PC:** `/proc/stat`, `sensors`, `df`, `os` do Node.js
+- **Máquinas:** `config/machines.json`
+- **Projetos:** `config/projects.json` + `pm2 jlist` + HTTP healthcheck
+
+---
+
+## Configuração de máquinas
+
+Arquivo: `config/machines.json`
+
+```json
+[
+  { "id": "pc-servidor", "name": "PC servidor", "role": "server", "hostname": "server-desktop" },
+  { "id": "pc-trabalho", "name": "PC trabalho", "role": "work", "hostname": null },
+  { "id": "pc-reserva", "name": "PC reserva", "role": "reserve", "hostname": null }
+]
+```
+
+No MVP, apenas `role: "server"` coleta métricas reais locais. Os demais PCs aparecem offline até a futura instalação do agent.
+
+## Configuração de projetos
+
+Arquivo: `config/projects.json`
+
+```json
+[
+  {
+    "id": "painel-limites",
+    "name": "Painel de Limites",
+    "kind": "pm2",
+    "pm2Name": "painel-limites",
+    "port": 4173,
+    "healthUrl": "http://127.0.0.1:4173/api/health",
+    "publicUrl": "https://limites.cursar.space/",
+    "deployTarget": "PM2 + Cloudflare Tunnel"
+  }
+]
+```
+
+Campos principais:
+- `kind`: `pm2`, `http` ou `manual`
+- `pm2Name`: nome do processo no PM2
+- `healthUrl`: URL usada para confirmar se está online
+- `publicUrl`: link exibido no painel
+
+## Alertas automáticos
+
+- Disco warning: >= 80%
+- Disco crítico: >= 90%
+- DeepSeek warning: <= US$ 1
+- DeepSeek crítico: <= US$ 0.10
+- Codex warning: janela principal >= 95%
+- Codex crítico: janela principal >= 99%
+- PC offline: warning
+- Projeto offline: crítico
 
 ---
 

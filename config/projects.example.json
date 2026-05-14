@@ -1,0 +1,12 @@
+[
+  {
+    "id": "painel-limites",
+    "name": "Painel de Limites",
+    "kind": "pm2",
+    "pm2Name": "painel-limites",
+    "port": 4173,
+    "healthUrl": "http://127.0.0.1:4173/api/health",
+    "publicUrl": "https://limites.cursar.space/",
+    "deployTarget": "PM2 + Cloudflare Tunnel"
+  }
+]

@@ -13,6 +13,8 @@ const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
 const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || path.join(os.homedir(), '.codex', 'auth.json')
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
 const DIST_DIR = path.join(process.cwd(), 'dist')
+const MACHINES_CONFIG_FILE = path.join(process.cwd(), 'config', 'machines.json')
+const PROJECTS_CONFIG_FILE = path.join(process.cwd(), 'config', 'projects.json')
 const HERMES_AUTH_PATH = process.env.HERMES_AUTH_PATH || path.join(os.homedir(), '.hermes', 'auth.json')
 const HERMES_CODEX_PROVIDER_KEY = process.env.HERMES_CODEX_PROVIDER_KEY || 'openai-codex'
 const CODEX_PROFILES_ROOT = process.env.CODEX_PROFILES_ROOT || path.join(os.homedir(), '.config', 'codex-profiles')
@@ -132,7 +134,7 @@ function requireAdminAction(req, res, next) {
     return res.status(403).json({ error: 'Header x-admin-action obrigatorio' })
   }
   const origin = req.headers.origin
-  const host = req.headers.host
+  const host = req.headers['x-forwarded-host'] || req.headers.host
   if (origin && host) {
     try {
       const originHost = new URL(origin).host
@@ -412,6 +414,21 @@ function readJson(filePath) {
   } catch {
     return null
   }
+}
+
+function readMachinesConfig() {
+  const fallback = [
+    { id: 'pc-servidor', name: 'PC servidor', role: 'server', hostname: os.hostname(), notes: 'Servidor local' },
+    { id: 'pc-trabalho', name: 'PC trabalho', role: 'work', hostname: null, notes: 'Aguardando agent' },
+    { id: 'pc-reserva', name: 'PC reserva', role: 'reserve', hostname: null, notes: 'Aguardando agent' },
+  ]
+  const config = readJson(MACHINES_CONFIG_FILE)
+  return Array.isArray(config) && config.length ? config : fallback
+}
+
+function readProjectsConfig() {
+  const config = readJson(PROJECTS_CONFIG_FILE)
+  return Array.isArray(config) ? config : []
 }
 
 function safeExec(cmd) {
@@ -951,24 +968,194 @@ function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
   }
 }
 
+function collectMachines() {
+  const configs = readMachinesConfig()
+  const now = new Date().toISOString()
+  const localMetrics = collectPcMetrics()
+
+  return configs.map((machine) => {
+    const isServer = machine.role === 'server' || machine.id === 'pc-servidor'
+    return {
+      id: machine.id,
+      name: machine.name,
+      role: machine.role || 'other',
+      hostname: isServer ? os.hostname() : machine.hostname || null,
+      status: isServer ? 'online' : 'offline',
+      lastSeenAt: isServer ? now : null,
+      metrics: isServer ? localMetrics : null,
+      notes: machine.notes || null,
+    }
+  })
+}
+
+function readPm2Processes() {
+  const raw = safeExec('pm2 jlist')
+  if (!raw) return []
+  try { return JSON.parse(raw) } catch { return [] }
+}
+
+async function collectProjects() {
+  const configs = readProjectsConfig()
+  const pm2Processes = readPm2Processes()
+  const now = new Date().toISOString()
+
+  return Promise.all(configs.map(async (project) => {
+    let status = 'unknown'
+
+    if (project.kind === 'pm2' && project.pm2Name) {
+      const proc = pm2Processes.find((item) => item.name === project.pm2Name)
+      status = proc?.pm2_env?.status === 'online' ? 'online' : 'offline'
+    }
+
+    if (project.healthUrl) {
+      try {
+        const response = await fetch(project.healthUrl, { signal: AbortSignal.timeout(3000) })
+        status = response.ok ? 'online' : 'offline'
+      } catch {
+        if (status === 'unknown') status = 'offline'
+      }
+    }
+
+    return {
+      id: project.id,
+      name: project.name,
+      kind: project.kind || 'manual',
+      status,
+      port: project.port || null,
+      publicUrl: project.publicUrl || null,
+      healthUrl: project.healthUrl || null,
+      deployTarget: project.deployTarget || null,
+      lastCheckedAt: now,
+    }
+  }))
+}
+
+function parseDiskPercent(value) {
+  return Number(String(value || '').replace('%', '')) || 0
+}
+
+function deriveAlerts({ machines, limitsPayload, deepseekPayload, projects }) {
+  const now = new Date().toISOString()
+  const alerts = []
+
+  for (const machine of machines) {
+    if (machine.status !== 'online') {
+      alerts.push({
+        id: `machine-offline-${machine.id}`,
+        severity: 'warning',
+        module: 'machines',
+        title: `${machine.name} offline`,
+        message: 'Máquina sem heartbeat/agent ativo.',
+        createdAt: now,
+        sourceId: machine.id,
+      })
+    }
+
+    for (const disk of machine.metrics?.disks || []) {
+      const percent = parseDiskPercent(disk.percent)
+      if (percent >= 90) {
+        alerts.push({
+          id: `disk-critical-${machine.id}-${disk.mount}`,
+          severity: 'critical',
+          module: 'machines',
+          title: `Disco quase cheio em ${machine.name}`,
+          message: `${disk.label || disk.mount}: ${disk.percent} usado.`,
+          createdAt: now,
+          sourceId: machine.id,
+        })
+      } else if (percent >= 80) {
+        alerts.push({
+          id: `disk-warning-${machine.id}-${disk.mount}`,
+          severity: 'warning',
+          module: 'machines',
+          title: `Disco acima de 80% em ${machine.name}`,
+          message: `${disk.label || disk.mount}: ${disk.percent} usado.`,
+          createdAt: now,
+          sourceId: machine.id,
+        })
+      }
+    }
+  }
+
+  const deepseekBalance = Number(deepseekPayload?.balance?.balance_infos?.[0]?.total_balance || 0)
+  if (Number.isFinite(deepseekBalance) && deepseekBalance <= 1) {
+    alerts.push({
+      id: 'deepseek-low-balance',
+      severity: deepseekBalance <= 0.1 ? 'critical' : 'warning',
+      module: 'ai',
+      title: 'Saldo DeepSeek baixo',
+      message: `Saldo atual: US$ ${deepseekBalance.toFixed(2)}.`,
+      createdAt: now,
+      sourceId: 'deepseek',
+    })
+  }
+
+  const primaryUsed = limitsPayload?.usage?.windows?.primary?.usedPercent
+  if (typeof primaryUsed === 'number' && primaryUsed >= 95) {
+    alerts.push({
+      id: 'codex-primary-limit-high',
+      severity: primaryUsed >= 99 ? 'critical' : 'warning',
+      module: 'ai',
+      title: 'Limite principal Codex quase esgotado',
+      message: `Uso atual: ${Math.round(primaryUsed)}%.`,
+      createdAt: now,
+      sourceId: 'codex',
+    })
+  }
+
+  for (const project of projects) {
+    if (project.status === 'offline') {
+      alerts.push({
+        id: `project-offline-${project.id}`,
+        severity: 'critical',
+        module: 'projects',
+        title: `${project.name} caiu`,
+        message: project.publicUrl ? `URL: ${project.publicUrl}` : 'Serviço marcado como offline.',
+        createdAt: now,
+        sourceId: project.id,
+      })
+    }
+  }
+
+  return alerts
+}
+
+async function buildLimitsPayload() {
+  const [usage, hermesCodex] = await Promise.all([
+    fetchCodexUsage(),
+    readHermesCodexSnapshot(),
+  ])
+  return { usage: normalizeUsage(usage), local: readLocalMetrics(), hermesCodex }
+}
+
+async function buildDashboardOverview() {
+  const [limitsSettled, deepseekSettled] = await Promise.allSettled([
+    buildLimitsPayload(),
+    fetchDeepSeekBalance(),
+  ])
+
+  const limits = limitsSettled.status === 'fulfilled' ? limitsSettled.value : null
+  const deepseek = deepseekSettled.status === 'fulfilled' ? deepseekSettled.value : null
+  const machines = collectMachines()
+  const projects = await collectProjects()
+  const alerts = deriveAlerts({ machines, limitsPayload: limits, deepseekPayload: deepseek, projects })
+
+  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { limits, deepseek }, projects, alerts }
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, checkedAt: new Date().toISOString() })
 })
 
-app.get('/api/limits', async (_req, res) => {
+app.get('/api/limits', requireAdmin, async (_req, res) => {
   try {
-    const [usage, hermesCodex] = await Promise.all([
-      fetchCodexUsage(),
-      readHermesCodexSnapshot(),
-    ])
-    const local = readLocalMetrics()
-    res.json({ usage: normalizeUsage(usage), local, hermesCodex })
+    res.json(await buildLimitsPayload())
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
 })
 
-app.get('/api/pc-metrics', (_req, res) => {
+app.get('/api/pc-metrics', requireAdmin, (_req, res) => {
   try {
     const metrics = collectPcMetrics()
     res.json({ ok: true, checkedAt: new Date().toISOString(), metrics })
@@ -997,27 +1184,66 @@ function readDeepSeekKey() {
   }
 }
 
-app.get('/api/deepseek', async (_req, res) => {
+async function fetchDeepSeekBalance() {
+  const key = readDeepSeekKey()
+  if (!key) {
+    const err = new Error('DEEPSEEK_API_KEY nao encontrada')
+    err.statusCode = 400
+    throw err
+  }
+
+  const response = await fetch('https://api.deepseek.com/v1/user/balance', {
+    headers: { Authorization: `Bearer ${key}` },
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Falha ao consultar saldo DeepSeek: HTTP ${response.status} ${text.slice(0, 160)}`)
+  }
+
+  return {
+    ok: true,
+    checkedAt: new Date().toISOString(),
+    balance: JSON.parse(text),
+  }
+}
+
+app.get('/api/deepseek', requireAdmin, async (_req, res) => {
   try {
-    const key = readDeepSeekKey()
-    if (!key) {
-      return res.status(400).json({ error: 'DEEPSEEK_API_KEY nao encontrada', checkedAt: new Date().toISOString() })
-    }
+    res.json(await fetchDeepSeekBalance())
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
 
-    const response = await fetch('https://api.deepseek.com/v1/user/balance', {
-      headers: { Authorization: `Bearer ${key}` },
-    })
-    const text = await response.text()
-    if (!response.ok) {
-      throw new Error(`Falha ao consultar saldo DeepSeek: HTTP ${response.status} ${text.slice(0, 160)}`)
-    }
+app.get('/api/machines', requireAdmin, (_req, res) => {
+  try {
+    res.json({ ok: true, checkedAt: new Date().toISOString(), machines: collectMachines() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
 
-    const data = JSON.parse(text)
-    res.json({
-      ok: true,
-      checkedAt: new Date().toISOString(),
-      balance: data,
-    })
+app.get('/api/projects', requireAdmin, async (_req, res) => {
+  try {
+    const projects = await collectProjects()
+    res.json({ ok: true, checkedAt: new Date().toISOString(), projects })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.get('/api/alerts', requireAdmin, async (_req, res) => {
+  try {
+    const dashboard = await buildDashboardOverview()
+    res.json({ ok: true, checkedAt: dashboard.checkedAt, alerts: dashboard.alerts })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.get('/api/dashboard', requireAdmin, async (_req, res) => {
+  try {
+    res.json(await buildDashboardOverview())
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
@@ -1157,6 +1383,7 @@ function startStaticServer() {
       'x-admin-action': req.headers['x-admin-action'] || '',
       origin: req.headers.origin || '',
       host: req.headers.host || '',
+      'x-forwarded-host': req.headers.host || '',
       'x-forwarded-proto': req.headers['x-forwarded-proto'] || '',
     }
     fetch(target, {
