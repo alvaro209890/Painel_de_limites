@@ -11,3 +11,12 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
   if (!response.ok) throw new Error(payload.error || 'Falha na requisicao')
   return payload as T
 }
+
+export type RenameResult = { ok: boolean; machineId: string; name: string; checkedAt: string }
+
+export async function renameMachine(machineId: string, name: string): Promise<RenameResult> {
+  return apiFetch<RenameResult>(`/api/machines/${encodeURIComponent(machineId)}/rename`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}

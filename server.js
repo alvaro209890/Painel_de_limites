@@ -1454,12 +1454,60 @@ app.post('/api/agent/heartbeat', (req, res) => {
   }
   writeAgentHeartbeats(heartbeats)
 
+  // Auto-registro: se a máquina não existe em machines.json, adiciona
+  const machines = readMachinesConfig()
+  const exists = machines.some((m) => m.id === machineId)
+  if (!exists) {
+    const displayName = machineId
+      .replace(/^pc-/, 'PC ')
+      .replace(/^notebook-/, 'Notebook ')
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+    machines.push({
+      id: machineId,
+      name: displayName,
+      role: 'work',
+      hostname: hostname || null,
+      notes: `Registrado automaticamente pelo limits-agent. Edite o nome no painel.`,
+    })
+    atomicWriteJson(MACHINES_CONFIG_FILE, machines)
+    console.log(`[Painel] Novo agent registrado: ${machineId} -> ${displayName}`)
+  }
+
   res.json({
     ok: true,
     machineId,
     lastSeenAt: now,
     ttlMs: AGENT_HEARTBEAT_TTL_MS,
   })
+})
+
+// ─── Renomear máquina ─────────────────────────────────────────────
+
+app.post('/api/machines/:id/rename', requireAdmin, requireAdminAction, (req, res) => {
+  try {
+    const machineId = req.params.id
+    const newName = String(req.body?.name || '').trim()
+    if (!newName) {
+      return res.status(400).json({ error: 'Nome obrigatorio' })
+    }
+    if (newName.length > 100) {
+      return res.status(400).json({ error: 'Nome muito longo (max 100 chars)' })
+    }
+
+    const machines = readMachinesConfig()
+    const target = machines.find((m) => m.id === machineId)
+    if (!target) {
+      return res.status(404).json({ error: `Maquina ${machineId} nao encontrada` })
+    }
+
+    target.name = newName
+    atomicWriteJson(MACHINES_CONFIG_FILE, machines)
+
+    res.json({ ok: true, machineId, name: newName, checkedAt: new Date().toISOString() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
 })
 
 // ─── Error handling middleware ──────────────────────────────────

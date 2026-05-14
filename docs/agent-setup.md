@@ -25,9 +25,53 @@ envia periodicamente para o servidor do Painel de Limites.
 
 ## Instalação no PC remoto
 
-### 1. Configurar o servidor
+### Setup automático (recomendado)
 
-No servidor, defina a env var `LIMITS_PANEL_AGENT_SECRET`:
+Antes de tudo, o servidor precisa ter o token configurado
+(`LIMITS_PANEL_AGENT_SECRET`). Se já está configurado, vá direto
+para o PC remoto.
+
+No PC remoto, execute:
+
+```bash
+# 1. Baixar o script
+sudo curl -sSLo /usr/local/bin/limits-agent \
+  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
+sudo chmod +x /usr/local/bin/limits-agent
+
+# 2. Configurar (assistente interativo — pergunta URL, ID e token)
+limits-agent --setup
+
+# 3. Instalar como serviço (auto-start na inicialização)
+sudo limits-agent --install
+```
+
+Pronto. O agent já vai estar rodando e vai iniciar automaticamente
+toda vez que o PC ligar.
+
+> **Auto-registro:** se o `machine_id` não existir em `config/machines.json`,
+> o servidor cria uma entrada automaticamente no primeiro heartbeat.
+> Depois é só renomear do painel (botão ✎ ao lado do nome).
+
+### Setup via flags (uma linha)
+
+Se já sabe os parâmetros, pode configurar de uma vez:
+
+```bash
+sudo curl -sSLo /usr/local/bin/limits-agent \
+  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
+sudo chmod +x /usr/local/bin/limits-agent
+
+# Cria config + já instala serviço
+limits-agent --server-url https://limites.cursar.space \
+             --machine-id pc-trabalho \
+             --secret SEU_TOKEN \
+  && sudo limits-agent --install
+```
+
+### Setup manual (alternativa)
+
+Se preferir configurar manualmente, primeiro configure o servidor:
 
 ```bash
 # Editar ~/.hermes/.env ou o ambiente do PM2
@@ -130,7 +174,21 @@ sudo systemctl enable --now limits-agent
 sudo systemctl status limits-agent
 ```
 
-### 7. Verificar no painel
+### 7. Renomear pelo painel
+
+O nome da máquina pode ser editado diretamente no painel:
+1. Acesse https://limites.cursar.space → login admin
+2. Aba **Máquinas**
+3. Clique no ícone **✎** ao lado do nome
+4. Digite o novo nome e pressione Enter ou clique ✔
+
+### 8. Auto-registro de novas máquinas
+
+Se um agent se conectar com um `machine_id` que não existe em
+`config/machines.json`, o servidor cria uma entrada automaticamente
+com um nome gerado a partir do ID. Depois é só renomear pelo painel.
+
+## Atualizar machines.json no servidor (se necessário)
 
 Acesse https://limites.cursar.space → faça login admin →
 módulo **Máquinas**. A máquina deve aparecer como `online`
@@ -151,6 +209,26 @@ Se adicionar um novo PC, edite `config/machines.json` no servidor:
 ```
 
 E no PC remoto use `"machine_id": "pc-novo"` no config do agent.
+
+## Comandos do agent
+
+| Comando | Descrição |
+|---------|-----------|
+| `limits-agent` | Modo normal — coleta e envia heartbeats |
+| `limits-agent --setup` | Assistente interativo para criar config |
+| `limits-agent --status` | Mostra status do serviço e config atual |
+| `limits-agent --uninstall` | Para e remove o serviço systemd |
+| `limits-agent --install` | Cria e ativa serviço systemd (precisa de sudo) |
+| `limits-agent --help` | Mostra todas as opções |
+
+Flags diretas (criam config automaticamente):
+
+| Flag | Exemplo |
+|------|---------|
+| `--server-url` | `--server-url https://limites.cursar.space` |
+| `--machine-id` | `--machine-id pc-trabalho` |
+| `--secret` | `--secret MEU_TOKEN_AQUI` |
+| `--interval` | `--interval 30` (10-3600s) |
 
 ## Logs e diagnóstico
 

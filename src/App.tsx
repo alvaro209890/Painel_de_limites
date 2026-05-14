@@ -400,7 +400,7 @@ function App() {
   }), [dashboard, profilesData])
 
   const moduleContent = (() => {
-    if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} />
+    if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} onRefresh={loadMachines} />
     if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} loading={loadingDashboard} error={dashboardError} />
     if (tab === 'codexAccounts') {
       return (
