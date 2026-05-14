@@ -136,6 +136,25 @@ print({
 PY
 ```
 
+## Agentes remotos (limits-agent)
+
+Instale o script `agent/limits-agent.py` em PCs remotos para coletar
+métricas e enviar ao Painel. Veja [`docs/agent-setup.md`](agent-setup.md).
+
+**No servidor**, configure o token de autenticação:
+
+```bash
+export LIMITS_PANEL_AGENT_SECRET='token-compartilhado-com-os-agents'
+pm2 restart painel-limites --update-env
+```
+
+**No PC remoto**, após instalar o agent, verifique se o heartbeat chega:
+
+```bash
+curl -sS http://127.0.0.1:4173/api/machines -H 'Cookie: limits_admin=...' \
+  | jq '.machines[] | select(.agent == true) | {id, status, lastSeenAt}'
+```
+
 ## Logs
 
 ```bash

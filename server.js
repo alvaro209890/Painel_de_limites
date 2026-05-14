@@ -23,6 +23,9 @@ const CODEX_BACKUPS_DIR = path.join(CODEX_PROFILES_ROOT, 'backups')
 const ADMIN_SECRET_FILE = path.join(CODEX_PROFILES_ROOT, 'admin-secret.json')
 const ROTATION_CONFIG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-config.json')
 const ROTATION_LOG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-events.jsonl')
+const AGENT_SECRET = process.env.LIMITS_PANEL_AGENT_SECRET || ''
+const AGENTS_DATA_FILE = process.env.LIMITS_PANEL_AGENTS_FILE || path.join(CODEX_PROFILES_ROOT, 'agents-heartbeats.json')
+const AGENT_HEARTBEAT_TTL_MS = (Number(process.env.LIMITS_PANEL_AGENT_TTL_MS) || 120_000)
 const ADMIN_PASSWORD = process.env.LIMITS_PANEL_ADMIN_PASSWORD || readAdminPasswordFromFile()
 const ADMIN_SESSION_SECRET = process.env.LIMITS_PANEL_SESSION_SECRET || readAdminSessionSecretFromFile() || crypto.randomBytes(32).toString('hex')
 
@@ -415,6 +418,37 @@ function readJson(filePath) {
     return null
   }
 }
+
+// ─── Agent heartbeats ─────────────────────────────────────────────
+
+function readAgentHeartbeats() {
+  try {
+    if (!fs.existsSync(AGENTS_DATA_FILE)) return {}
+    return JSON.parse(fs.readFileSync(AGENTS_DATA_FILE, 'utf8')) || {}
+  } catch {
+    return {}
+  }
+}
+
+function writeAgentHeartbeats(data) {
+  try {
+    atomicWriteJson(AGENTS_DATA_FILE, data)
+  } catch {
+    // best effort — heartbeat loss is acceptable
+  }
+}
+
+function pruneExpiredHeartbeats(heartbeats) {
+  const cutoff = Date.now() - AGENT_HEARTBEAT_TTL_MS
+  for (const [id, entry] of Object.entries(heartbeats)) {
+    if (entry.lastSeenAt && new Date(entry.lastSeenAt).getTime() < cutoff) {
+      delete heartbeats[id]
+    }
+  }
+  return heartbeats
+}
+
+// ─── Machines config ──────────────────────────────────────────────
 
 function readMachinesConfig() {
   const fallback = [
@@ -972,18 +1006,56 @@ function collectMachines() {
   const configs = readMachinesConfig()
   const now = new Date().toISOString()
   const localMetrics = collectPcMetrics()
+  const agentHeartbeats = pruneExpiredHeartbeats(readAgentHeartbeats())
+  const heartbeatById = new Map(Object.entries(agentHeartbeats))
+  const cutoff = Date.now() - AGENT_HEARTBEAT_TTL_MS
 
   return configs.map((machine) => {
     const isServer = machine.role === 'server' || machine.id === 'pc-servidor'
+    const hb = heartbeatById.get(machine.id)
+    const hbFresh = hb && hb.lastSeenAt && new Date(hb.lastSeenAt).getTime() > cutoff
+
+    // Server role always uses local metrics
+    if (isServer) {
+      return {
+        id: machine.id,
+        name: machine.name,
+        role: machine.role || 'other',
+        hostname: os.hostname(),
+        status: 'online',
+        lastSeenAt: now,
+        metrics: localMetrics,
+        notes: machine.notes || null,
+        agent: false,
+      }
+    }
+
+    // Agent-powered machine
+    if (hbFresh) {
+      return {
+        id: machine.id,
+        name: machine.name,
+        role: machine.role || 'other',
+        hostname: hb.hostname || machine.hostname || hb.metrics?.hostname || null,
+        status: 'online',
+        lastSeenAt: hb.lastSeenAt,
+        metrics: hb.metrics || null,
+        notes: machine.notes || `Agent: ${hb.agentVersion || 'limits-agent'}`,
+        agent: true,
+      }
+    }
+
+    // Offline / never seen
     return {
       id: machine.id,
       name: machine.name,
       role: machine.role || 'other',
-      hostname: isServer ? os.hostname() : machine.hostname || null,
-      status: isServer ? 'online' : 'offline',
-      lastSeenAt: isServer ? now : null,
-      metrics: isServer ? localMetrics : null,
-      notes: machine.notes || null,
+      hostname: machine.hostname || hb?.hostname || null,
+      status: hb ? 'offline' : 'offline',
+      lastSeenAt: hb?.lastSeenAt || null,
+      metrics: null,
+      notes: hb ? `${machine.notes || ''} (offline, sem heartbeat há ${Math.round((Date.now() - new Date(hb.lastSeenAt).getTime()) / 1000)}s)`.trim() : machine.notes || null,
+      agent: Boolean(hb),
     }
   })
 }
@@ -1348,6 +1420,46 @@ app.post('/api/codex-rotation/run-once', requireAdmin, requireAdminAction, async
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
+})
+
+// ─── Agent heartbeat endpoint ────────────────────────────────────
+//
+// Receives metrics from limits-agent running on remote machines.
+// Auth: Bearer token via LIMITS_PANEL_AGENT_SECRET.
+// Se AGENT_SECRET não estiver configurado, o endpoint fica inacessível (503).
+
+app.post('/api/agent/heartbeat', (req, res) => {
+  if (!AGENT_SECRET) {
+    return res.status(503).json({ error: 'LIMITS_PANEL_AGENT_SECRET nao configurado no servidor' })
+  }
+  const auth = String(req.headers.authorization || '')
+  const provided = auth.replace(/^Bearer\s+/i, '').trim()
+  if (!safeTimingEqual(provided, AGENT_SECRET)) {
+    return res.status(401).json({ error: 'Token de agent invalido' })
+  }
+
+  const { machineId, hostname, metrics, agentVersion } = req.body || {}
+
+  if (!machineId || !metrics) {
+    return res.status(400).json({ error: 'machineId e metrics sao obrigatorios' })
+  }
+
+  const now = new Date().toISOString()
+  const heartbeats = readAgentHeartbeats()
+  heartbeats[machineId] = {
+    hostname: String(hostname || machineId).slice(0, 128),
+    metrics,
+    agentVersion: String(agentVersion || 'limits-agent').slice(0, 64),
+    lastSeenAt: now,
+  }
+  writeAgentHeartbeats(heartbeats)
+
+  res.json({
+    ok: true,
+    machineId,
+    lastSeenAt: now,
+    ttlMs: AGENT_HEARTBEAT_TTL_MS,
+  })
 })
 
 // ─── Error handling middleware ──────────────────────────────────

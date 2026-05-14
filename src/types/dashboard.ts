@@ -144,6 +144,7 @@ export type DashboardMachine = {
   lastSeenAt: string | null
   metrics: PcMetrics | null
   notes?: string | null
+  agent?: boolean
 }
 
 export type ProjectService = {

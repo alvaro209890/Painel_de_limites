@@ -29,6 +29,7 @@ export function MachinesModule({ machines, loading, error }: MachinesModuleProps
               <div>
                 <h2 className="text-2xl font-black text-white">{machine.name}</h2>
                 <p className="mt-1 text-sm text-slate-400">{machine.hostname || machine.notes || 'Sem hostname'}</p>
+                {machine.agent && <span className="mt-1 inline-block rounded-md bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">agent remoto</span>}
               </div>
               <StatusBadge status={machine.status} />
             </div>
@@ -45,8 +46,17 @@ export function MachinesModule({ machines, loading, error }: MachinesModuleProps
               </>
             ) : (
               <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-5 text-sm text-slate-400">
-                <p className="font-semibold text-slate-200">Aguardando agent/heartbeat.</p>
-                <p className="mt-2">Quando o agent for instalado nesse PC, ele vai aparecer aqui com CPU, RAM, disco e status em tempo real.</p>
+                {machine.agent ? (
+                  <>
+                    <p className="font-semibold text-amber-200">Offline — sem heartbeat recente</p>
+                    <p className="mt-2">Último heartbeat: {formatDate(machine.lastSeenAt)}. O agent pode estar parado ou o PC desligado.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-slate-200">Aguardando agent/heartbeat.</p>
+                    <p className="mt-2">Quando o agent for instalado nesse PC, ele vai aparecer aqui com CPU, RAM, disco e status em tempo real.</p>
+                  </>
+                )}
               </div>
             )}
           </SectionCard>

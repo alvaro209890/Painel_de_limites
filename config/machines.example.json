@@ -4,20 +4,20 @@
     "name": "PC servidor",
     "role": "server",
     "hostname": "server-desktop",
-    "notes": "Máquina onde rodam Hermes, painel e serviços locais"
+    "notes": "Máquina onde rodam Hermes, painel e serviços locais. Métricas são coletadas localmente pelo servidor — não precisa de agent."
   },
   {
     "id": "pc-trabalho",
     "name": "PC trabalho",
     "role": "work",
     "hostname": null,
-    "notes": "Aguardando instalação do agent"
+    "notes": "Usa limits-agent para enviar métricas ao servidor"
   },
   {
     "id": "pc-reserva",
     "name": "PC reserva",
     "role": "reserve",
     "hostname": null,
-    "notes": "Aguardando instalação do agent"
+    "notes": "Usa limits-agent para enviar métricas ao servidor"
   }
 ]
