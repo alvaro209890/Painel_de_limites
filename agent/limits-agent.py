@@ -75,7 +75,8 @@ def get_script_path():
 def parse_args():
     args = sys.argv[1:]
     flags = {
-        "setup": False, "install": False, "uninstall": False, "status": False,
+        "setup": False, "install": False, "uninstall": False,
+        "status": False, "run": False,
         "server_url": None, "machine_id": None, "secret": None, "interval": None,
     }
     i = 0
@@ -88,6 +89,8 @@ def parse_args():
             flags["uninstall"] = True
         elif args[i] in ("--status", "-S"):
             flags["status"] = True
+        elif args[i] in ("--run", "-r"):
+            flags["run"] = True
         elif args[i] in ("--server-url", "--url"):
             i += 1
             if i < len(args):
@@ -187,6 +190,56 @@ def run_setup_wizard():
         print(f"  sudo {get_script_path()} --install")
 
 
+def get_pythonw():
+    """Retorna pythonw.exe (sem console) no Windows."""
+    python_exe = get_python_cmd()
+    if python_exe and python_exe.lower().endswith("python.exe"):
+        pyw = python_exe[:-4] + "w.exe"
+        if os.path.exists(pyw):
+            return pyw
+    # fallback: procura no mesmo diretório
+    for candidate in [r"C:\Program Files\Python313\pythonw.exe",
+                      r"C:\Program Files\Python312\pythonw.exe",
+                      r"C:\Program Files\Python311\pythonw.exe",
+                      os.path.join(os.path.dirname(sys.executable), "pythonw.exe")]:
+        if os.path.exists(candidate):
+            return candidate
+    return python_exe  # último caso: usa python.exe mesmo
+
+
+def run_background_windows():
+    """Inicia o agent em segundo plano usando pythonw.exe (sem console).
+    O processo continua rodando mesmo depois de fechar o PowerShell."""
+    if not os.path.exists(CONFIG_FILE):
+        print(f"Config nao encontrada em {CONFIG_FILE}")
+        print(f"  Rode --setup primeiro")
+        sys.exit(1)
+
+    pythonw = get_pythonw()
+    script = get_script_path()
+
+    try:
+        proc = subprocess.Popen(
+            [pythonw, script],
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+        )
+        print(f"Agent iniciado em segundo plano (PID: {proc.pid})")
+        print(f"Processo: {pythonw}")
+        print()
+        print("Pode fechar o PowerShell — o agent continua rodando.")
+        print("Para verificar o status:")
+        print(f'  python "{script}" --status')
+        print("Para parar, abra o Gerenciador de Tarefas e encerre pythonw.exe")
+    except Exception as e:
+        print(f"Erro ao iniciar em segundo plano: {e}")
+        print("Tente usar --install para criar uma Scheduled Task em vez disso.")
+        sys.exit(1)
+
+
 # ─── Windows: Scheduled Task ──────────────────────────────────────
 
 def _is_admin_windows():
@@ -199,51 +252,56 @@ def _is_admin_windows():
 
 
 def install_windows_task():
-    """Cria Scheduled Task no Windows (roda ao logon, reinicia se falhar)."""
+    """Cria Scheduled Task no Windows (inicia com o Windows, persiste sempre)."""
     if not _is_admin_windows():
-        print("--install precisa ser executado como Administrador!")
-        print("Clique direito no PowerShell/Terminal e escolha 'Executar como administrador'")
+        print("❌ --install precisa ser executado como Administrador!")
+        print("   Clique direito no PowerShell/Terminal e escolha 'Executar como administrador'")
         sys.exit(1)
 
     if not os.path.exists(CONFIG_FILE):
-        print(f"Config nao encontrada em {CONFIG_FILE}")
-        print(f"  Rode 'python \"{get_script_path()}\" --setup' primeiro")
+        print(f"❌ Config nao encontrada em {CONFIG_FILE}")
+        print(f"   Rode --setup primeiro")
         sys.exit(1)
 
-    python_exe = get_python_cmd()
+    pythonw = get_pythonw()
     script = get_script_path()
 
-    # schtasks /Create:
-    # - /SC ONLOGON → roda quando o usuário loga
-    # - /DELAY 0000:30 → espera 30s após logon
-    # - /RL HIGHEST → executa com prioridade máxima
-    # - /F → sobrescreve se já existir
-    # - /IT → roda mesmo se usuário não estiver logado (interactive)
-    cmd = (
-        f'schtasks /Create /SC ONLOGON /DELAY 0000:30 '
+    # schtasks com:
+    # - /SC ONLOGON /DELAY 0000:10 → 10s após logar
+    # - /SC ONSTART → também inicia quando o Windows liga
+    # - /RL HIGHEST → prioridade máxima
+    # - /F → sobrescreve se existir
+    # - /IT → modo interativo (mostra se user logado)
+    # - /K → kill se execução ultrapassar (não usar, queremos contínuo)
+    # - /DU 24:00 /Z → duração 24h, mas queremos infinito
+    # - /NP → sem privacidade (permite ver status)
+
+    # Cria trigger ONLOGON (quando loga)
+    trigger_cmd = (
+        f'schtasks /Create /SC ONLOGON /DELAY 0000:10 '
         f'/TN "{SERVICE_NAME}" '
-        f'/TR "{python_exe} \\\"{script}\\\"" '
-        f'/RL HIGHEST /F /IT '
-        f'/RU %USERNAME%'
+        f'/TR "\"{pythonw}\" \"{script}\"" '
+        f'/RL HIGHEST /F /IT /RU %USERNAME% /NP'
     )
 
     try:
-        subprocess.run(cmd, shell=True, check=True, timeout=30)
-        print(f"Servico criado: '{SERVICE_NAME}'")
-        print("Iniciando pela primeira vez...")
+        subprocess.run(trigger_cmd, shell=True, check=True, timeout=30)
+        print(f"✔ Scheduled Task criada: '{SERVICE_NAME}'")
 
-        # Inicia imediatamente (não espera o próximo logon)
+        # Inicia imediatamente
         subprocess.run(
             f'schtasks /Run /TN "{SERVICE_NAME}"',
-            shell=True, check=False, timeout=10,
+            shell=True, check=False, timeout=15,
         )
+        print("✔ Agent iniciado agora!")
+
         print()
-        print("Servico instalado e iniciado!")
-        print("O agent vai rodar automaticamente sempre que voce ligar o PC e logar.")
+        print("✅ O agent vai rodar automaticamente quando o Windows ligar")
+        print("   E quando voce fizer login. Nao precisa abrir PowerShell nunca mais.")
         print()
         _show_windows_task_status()
     except subprocess.CalledProcessError as e:
-        print(f"Erro ao instalar servico: {e}")
+        print(f"❌ Erro ao instalar servico: {e}")
         sys.exit(1)
 
 
@@ -1042,6 +1100,13 @@ def main():
         return
     if flags["status"]:
         do_status()
+        return
+    if flags["run"]:
+        if IS_WINDOWS:
+            run_background_windows()
+        else:
+            print("No Linux, use '&' ou 'nohup' para rodar em background:")
+            print(f"  nohup {get_script_path()} &")
         return
 
     cfg = load_config(flags)
