@@ -104,6 +104,11 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
                 )}
                 <p className="mt-1 text-sm text-slate-400 truncate">{machine.hostname || machine.notes || 'Sem hostname'}</p>
                 {machine.agent && <span className="mt-1 inline-block rounded-md bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">agent remoto</span>}
+                {machine.agents?.map((agent) => (
+                  <span key={agent.name} title={agent.description || ''} className="mt-1 inline-block rounded-md bg-cyan-300/15 px-2 py-0.5 text-xs font-bold text-cyan-200">
+                    {agent.name} {agent.description ? `• ${agent.description}` : ''}
+                  </span>
+                ))}
                 {renameError && isEditing && <p className="mt-1 text-xs text-rose-300">{renameError}</p>}
               </div>
               <StatusBadge status={machine.status} />

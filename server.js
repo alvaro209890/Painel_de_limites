@@ -238,7 +238,9 @@ function summarizeCodexAuth(authPath = CODEX_AUTH_PATH) {
 
 function listCodexProfiles() {
   ensureProfileDirs()
-  const activeHash = sha256File(CODEX_AUTH_PATH)
+  const activeCredential = readHermesCodexCredential()
+  const activeAccountId = activeCredential?.account_id || null
+  const activeLabel = activeCredential?.label || null
   const entries = fs.readdirSync(CODEX_PROFILES_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory())
   const profiles = entries.map((entry) => {
     const slug = entry.name
@@ -247,7 +249,10 @@ function listCodexProfiles() {
     const metaPath = path.join(dir, 'meta.json')
     const meta = readJson(metaPath) || {}
     const summary = summarizeCodexAuth(authPath)
-    const profileHash = sha256File(authPath)
+    const profileAuth = readJson(authPath)
+    const profileAccountId = profileAuth?.tokens?.account_id || null
+    // Perfil é ativo se o account_id coincide com a credencial ativa no Hermes
+    const isActive = Boolean(activeAccountId && profileAccountId && activeAccountId === profileAccountId)
     return {
       slug,
       name: meta.name || slug,
@@ -257,11 +262,11 @@ function listCodexProfiles() {
       createdAt: meta.createdAt || (fs.existsSync(authPath) ? fs.statSync(authPath).birthtime.toISOString() : null),
       updatedAt: meta.updatedAt || summary.updatedAt,
       lastActivatedAt: meta.lastActivatedAt || null,
-      isActive: Boolean(activeHash && profileHash && activeHash === profileHash),
+      isActive,
     }
   })
   profiles.sort((a, b) => String(a.name).localeCompare(String(b.name), 'pt-BR'))
-  return { active: summarizeCodexAuth(CODEX_AUTH_PATH), profiles }
+  return { active: summarizeHermesCodexCredential(activeCredential), profiles }
 }
 
 function saveCurrentCodexProfile(name) {
@@ -303,16 +308,33 @@ function activateCodexProfile(slug) {
   const dir = profilePath(slug)
   const sourceAuth = path.join(dir, 'auth.json')
   if (!fs.existsSync(sourceAuth)) throw new Error('auth.json do perfil nao encontrado')
-  fs.mkdirSync(path.dirname(CODEX_AUTH_PATH), { recursive: true, mode: 0o700 })
-  const backupPath = backupActiveCodexAuth()
-  fs.copyFileSync(sourceAuth, CODEX_AUTH_PATH)
-  chmodPrivate(CODEX_AUTH_PATH)
+  const profileAuth = readJson(sourceAuth)
+  const tokens = profileAuth?.tokens || {}
+  const accessToken = tokens.access_token
+  const refreshToken = tokens.refresh_token
+  const accountId = tokens.account_id
+  if (!accessToken) throw new Error(`Perfil "${slug}" nao possui access_token`)
+
+  // Atualiza o credential pool do Hermes (conta que o Codex usa como subagente)
+  const credential = updateHermesCodexCredential({
+    accessToken,
+    refreshToken,
+    accountId,
+    label: `perfil:${slug}`,
+  })
+
+  // Backup do auth antigo do Hermes
+  const backupPath = path.join(CODEX_BACKUPS_DIR, `hermes-auth-${slug}-${Date.now()}.json`)
+  try { fs.copyFileSync(HERMES_AUTH_PATH, backupPath); chmodPrivate(backupPath) } catch {}
+
+  // Atualiza metadado do perfil
   const metaPath = path.join(dir, 'meta.json')
   const meta = readJson(metaPath) || { name: slug }
   meta.lastActivatedAt = new Date().toISOString()
   meta.updatedAt = meta.updatedAt || meta.lastActivatedAt
   atomicWriteJson(metaPath, meta)
-  return { slug, backupPath, active: summarizeCodexAuth(CODEX_AUTH_PATH) }
+
+  return { slug, backupPath, active: summarizeHermesCodexCredential(credential) }
 }
 
 function deleteCodexProfile(slug) {
@@ -749,11 +771,19 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
     }
 
     const profilesState = listCodexProfiles()
-    const activeProfile = profilesState.profiles.find((profile) => profile.isActive) || null
+    const activeCredential = readHermesCodexCredential()
     let activeUsage = null
     let activeReasons = []
     try {
-      activeUsage = normalizeUsage(await fetchCodexUsage(CODEX_AUTH_PATH), CODEX_AUTH_PATH)
+      if (activeCredential?.access_token) {
+        activeUsage = normalizeUsage(await fetchUsageWithToken({
+          accessToken: activeCredential.access_token,
+          accountId: activeCredential.account_id || '',
+          label: 'Hermes OpenAI Codex',
+        }))
+      } else {
+        activeReasons = ['sem_credencial_ativa_no_hermes']
+      }
       activeReasons = usageExhaustionReasons(activeUsage, config)
     } catch (error) {
       activeReasons = [`erro_conta_ativa:${error.message}`]
@@ -765,7 +795,7 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
       return result
     }
 
-    const candidates = orderRotationCandidates(profilesState.profiles, config, activeProfile?.slug)
+    const candidates = orderRotationCandidates(profilesState.profiles, config, null)
     const checked = []
     for (const candidate of candidates) {
       try {
@@ -776,7 +806,7 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
           const eventBase = {
             type: dryRun || config.notifyOnly ? 'rotation-dry-run' : 'rotation',
             trigger: reason,
-            from: activeProfile ? { slug: activeProfile.slug, name: activeProfile.name, emailHint: activeProfile.emailHint } : profilesState.active,
+            from: profilesState.active,
             to: { slug: candidate.slug, name: candidate.name, emailHint: candidate.emailHint, planType: candidate.planType },
             activeReasons,
             checked,
@@ -800,7 +830,7 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
       }
     }
 
-    const event = appendRotationEvent({ type: 'rotation-failed', trigger: reason, from: activeProfile, activeReasons, checked, note: 'nenhum_perfil_disponivel' })
+    const event = appendRotationEvent({ type: 'rotation-failed', trigger: reason, from: profilesState.active, activeReasons, checked, note: 'nenhum_perfil_disponivel' })
     const result = { ok: false, rotated: false, error: 'Nenhum perfil Codex disponivel para rotacao', event, checkedAt: new Date().toISOString() }
     rotationLastResult = result
     rotationLastRunAt = now
@@ -881,6 +911,61 @@ function readHermesCodexCredential() {
   const credential = Array.isArray(credentials) ? credentials[0] : null
   if (!credential?.access_token) return null
   return credential
+}
+
+function updateHermesCodexCredential({ accessToken, refreshToken, accountId, label = null }) {
+  const auth = readJson(HERMES_AUTH_PATH)
+  if (!auth) throw new Error('~/.hermes/auth.json nao encontrado')
+  if (!auth.credential_pool) auth.credential_pool = {}
+  if (!Array.isArray(auth.credential_pool[HERMES_CODEX_PROVIDER_KEY])) {
+    auth.credential_pool[HERMES_CODEX_PROVIDER_KEY] = []
+  }
+  const pool = auth.credential_pool[HERMES_CODEX_PROVIDER_KEY]
+  if (pool.length === 0) {
+    pool.push({
+      id: crypto.randomBytes(3).toString('hex'),
+      label: label || `codex-rotated-${Date.now()}`,
+      auth_type: 'oauth',
+      priority: 0,
+      source: 'manual:panel_rotation',
+      access_token: accessToken,
+      refresh_token: refreshToken || null,
+      account_id: accountId || null,
+      last_status: 'ok',
+      last_status_at: new Date().toISOString(),
+      last_error_code: null,
+      last_error_reason: null,
+      last_error_message: null,
+      last_error_reset_at: null,
+      base_url: 'https://chatgpt.com/backend-api/codex',
+      request_count: 0,
+    })
+  } else {
+    pool[0].access_token = accessToken
+    if (refreshToken) pool[0].refresh_token = refreshToken
+    if (accountId) pool[0].account_id = accountId
+    if (label) pool[0].label = label
+    pool[0].last_status = 'ok'
+    pool[0].last_status_at = new Date().toISOString()
+    pool[0].source = 'manual:panel_rotation'
+  }
+  auth.updated_at = new Date().toISOString()
+  atomicWriteJson(HERMES_AUTH_PATH, auth)
+  return readHermesCodexCredential()
+}
+
+function summarizeHermesCodexCredential(credential) {
+  if (!credential) return { exists: false, email: null, planType: null, accountIdHint: null, updatedAt: null }
+  const accountId = credential.account_id || null
+  const email = extractEmailFromIdToken({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
+  const planType = extractPlanTypeFromIdToken({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
+  return {
+    exists: true,
+    email: redactEmail(email),
+    planType,
+    accountIdHint: accountId ? `${String(accountId).slice(0, 6)}***${String(accountId).slice(-4)}` : null,
+    updatedAt: credential.last_status_at || null,
+  }
 }
 
 async function readHermesCodexSnapshot() {
@@ -1027,6 +1112,7 @@ function collectMachines() {
         metrics: localMetrics,
         notes: machine.notes || null,
         agent: false,
+        agents: machine.agents || null,
       }
     }
 
@@ -1042,6 +1128,7 @@ function collectMachines() {
         metrics: hb.metrics || null,
         notes: machine.notes || `Agent: ${hb.agentVersion || 'limits-agent'}`,
         agent: true,
+        agents: machine.agents || null,
       }
     }
 
@@ -1056,6 +1143,7 @@ function collectMachines() {
       metrics: null,
       notes: hb ? `${machine.notes || ''} (offline, sem heartbeat há ${Math.round((Date.now() - new Date(hb.lastSeenAt).getTime()) / 1000)}s)`.trim() : machine.notes || null,
       agent: Boolean(hb),
+      agents: machine.agents || null,
     }
   })
 }
@@ -1193,11 +1281,31 @@ function deriveAlerts({ machines, limitsPayload, deepseekPayload, projects }) {
 }
 
 async function buildLimitsPayload() {
-  const [usage, hermesCodex] = await Promise.all([
-    fetchCodexUsage(),
-    readHermesCodexSnapshot(),
-  ])
-  return { usage: normalizeUsage(usage), local: readLocalMetrics(), hermesCodex }
+  const hermesCredential = readHermesCodexCredential()
+  const hermesUsage = hermesCredential?.access_token
+    ? normalizeUsage(await fetchUsageWithToken({
+        accessToken: hermesCredential.access_token,
+        accountId: hermesCredential.account_id || '',
+        label: 'Hermes OpenAI Codex',
+      }))
+    : null
+
+  // Tenta pegar o usage do Codex CLI standalone também para comparação, mas não falha se não existir
+  let codexCliUsage = null
+  try {
+    codexCliUsage = normalizeUsage(await fetchCodexUsage(), CODEX_AUTH_PATH)
+  } catch {}
+
+  return {
+    usage: hermesUsage || codexCliUsage,
+    hermesCodex: hermesCredential ? {
+      ok: true,
+      usage: hermesUsage,
+      credentialLabel: hermesCredential.label || null,
+    } : { ok: false, error: 'Sem credencial Hermes OpenAI Codex' },
+    codexCli: codexCliUsage ? { ok: true, usage: codexCliUsage } : { ok: false, error: 'Codex CLI nao esta logado' },
+    local: readLocalMetrics(),
+  }
 }
 
 async function buildDashboardOverview() {

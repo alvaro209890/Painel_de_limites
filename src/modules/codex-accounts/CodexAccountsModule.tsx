@@ -62,7 +62,7 @@ export function CodexAccountsModule({
     <div className="space-y-5">
       <SectionCard
         title="Contas Codex / Hermes"
-        subtitle="A conta do Hermes é a que eu uso para responder aqui. A conta do Codex CLI fica separada e continua servindo para perfis, login e rotação."
+        subtitle="A conta do Hermes e do Claw (agente secundário) é a mesma — ambos compartilham o credential pool. A conta do Codex CLI fica separada e continua servindo para perfis, login e rotação."
         action={(
           <button className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-2 text-sm font-black text-cyan-100 hover:bg-cyan-300/15" onClick={onRefresh} type="button" disabled={busy}>
             Atualizar contas
@@ -81,11 +81,11 @@ export function CodexAccountsModule({
             </div>
             <dl className="space-y-3 text-sm">
               <div><dt className="text-cyan-100/70">Fonte</dt><dd className="font-bold text-slate-100">~/.hermes/auth.json</dd></div>
-              <div><dt className="text-cyan-100/70">Provider</dt><dd className="font-bold text-slate-100">{hermesCodex?.provider || 'openai-codex'}</dd></div>
+              <div><dt className="text-cyan-100/70">Provider</dt><dd className="font-bold text-slate-100">openai-codex</dd></div>
               <div><dt className="text-cyan-100/70">Credencial</dt><dd className="font-bold text-slate-100">{hermesCodex?.credentialLabel || '-'}</dd></div>
               <div><dt className="text-cyan-100/70">E-mail</dt><dd className="font-bold text-slate-100">{hermesUsage?.account.email || 'Sem dados'}</dd></div>
               <div><dt className="text-cyan-100/70">Plano</dt><dd className="font-bold text-slate-100">{hermesUsage?.account.planType || '-'}</dd></div>
-              <div><dt className="text-cyan-100/70">Atualizado</dt><dd className="font-bold text-slate-100">{formatDate(hermesUsage?.checkedAt || hermesCodex?.checkedAt)}</dd></div>
+              <div><dt className="text-cyan-100/70">Atualizado</dt><dd className="font-bold text-slate-100">{formatDate(hermesUsage?.checkedAt)}</dd></div>
             </dl>
             {hermesCodex?.error && <p className="mt-4 rounded-xl border border-amber-300/20 bg-amber-400/10 p-3 text-sm text-amber-100">{hermesCodex.error}</p>}
           </div>
@@ -138,7 +138,7 @@ export function CodexAccountsModule({
         </div>
       </SectionCard>
 
-      <SectionCard title="Perfis salvos do Codex CLI" subtitle="Esses perfis são da CLI em ~/.codex/auth.json. Eles não alteram automaticamente a credencial que o Hermes usa em ~/.hermes/auth.json.">
+      <SectionCard title="Perfis salvos do Codex CLI" subtitle="Perfis capturados da CLI em ~/.codex/auth.json. Ao ativar um perfil, a credencial é copiada para o credential pool do Hermes (~/.hermes/auth.json), que é a conta que o Codex usa como subagente.">
         <div className="mb-4 flex flex-col gap-2 sm:flex-row">
           <input
             className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none ring-cyan-300/30 transition focus:ring-4"
@@ -178,7 +178,7 @@ export function CodexAccountsModule({
         </div>
       </SectionCard>
 
-      <SectionCard title="Rotação automática Codex CLI" subtitle="Troca automaticamente o ~/.codex/auth.json para outro perfil salvo quando a conta ativa da CLI atinge o limite configurado. A conta Hermes é mostrada acima e não é alterada por essa rotação.">
+      <SectionCard title="Rotação automática Codex CLI" subtitle="Troca automaticamente a credencial no Hermes credential pool (~/.hermes/auth.json) quando a conta ativa atinge o limite. A rotação não altera o ~/.codex/auth.json (Codex CLI standalone).">
         {rotationError && <p className="mb-4 rounded-2xl border border-rose-300/20 bg-rose-400/10 p-3 text-sm text-rose-100">{rotationError}</p>}
         <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
           <div className="space-y-3 rounded-2xl border border-white/10 bg-black/20 p-4">

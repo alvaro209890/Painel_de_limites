@@ -25,19 +25,21 @@ export type UsageInfo = {
 
 export type HermesCodexPayload = {
   ok: boolean
-  label: string
-  authPath: string
-  provider: string
-  endpoint: string
-  credentialLabel: string | null
+  usage?: UsageInfo
+  credentialLabel?: string | null
+  error?: string
+}
+
+export type CodexCliPayload = {
+  ok: boolean
   usage?: UsageInfo
   error?: string
-  checkedAt?: string
 }
 
 export type LimitsPayload = {
-  usage: UsageInfo
+  usage: UsageInfo | null
   hermesCodex?: HermesCodexPayload
+  codexCli?: CodexCliPayload
   local: {
     totals: { threads: number; tokens: number; last_used: number | null }
     byModel: Array<{ model: string; provider: string; threads: number; tokens: number; last_used: number }>
@@ -135,6 +137,11 @@ export type CodexRotationPayload = {
 
 export type MachineStatus = 'online' | 'offline' | 'unknown'
 
+export type AgentInfo = {
+  name: string
+  description?: string | null
+}
+
 export type DashboardMachine = {
   id: string
   name: string
@@ -145,6 +152,7 @@ export type DashboardMachine = {
   metrics: PcMetrics | null
   notes?: string | null
   agent?: boolean
+  agents?: AgentInfo[] | null
 }
 
 export type ProjectService = {

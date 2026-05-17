@@ -36,11 +36,15 @@ export function AiModule({ limits, deepseek, loading, error }: AiModuleProps) {
 
   const dsBalance = deepseek?.balance.balance_infos?.[0]
   const hermesUsage = limits?.hermesCodex?.usage
+  const codexCliUsage = limits?.codexCli?.usage
 
   return (
     <div className="grid gap-5 xl:grid-cols-2">
-      <LimitWindow title="OpenAI/Codex CLI" usage={limits?.usage} />
       <LimitWindow title="Hermes OpenAI Codex" usage={hermesUsage} />
+      <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-400 -mt-3 mb-2 xl:col-span-2 text-center">
+        ⚡ Hermes <strong className="text-cyan-200">e</strong> Claw <strong className="text-cyan-200">compartilham</strong> o mesmo credential pool OpenAI Codex
+      </div>
+      <LimitWindow title="Codex CLI (standalone)" usage={codexCliUsage} />
 
       <SectionCard title="DeepSeek" subtitle="Saldo e disponibilidade da conta DeepSeek">
         <div className="grid gap-3 md:grid-cols-3">
