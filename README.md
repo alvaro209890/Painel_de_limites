@@ -70,6 +70,7 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 | `GET` | `/api/codex-rotation` | Status/config/eventos da rotação automática *(admin)* |
 | `POST` | `/api/codex-rotation/config` | Atualizar configuração da rotação automática *(admin)* |
 | `POST` | `/api/codex-rotation/run-once` | Executar teste ou rotação manual *(admin)* |
+| `POST` | `/api/llm-route` | Rota local para automações: GPT-5.5 Medium via Hermes Codex + fallback DeepSeek v4 Pro *(agent secret)* |
 
 ---
 
@@ -215,7 +216,11 @@ Configuração padrão:
 
 Documentação completa: [`docs/codex-auto-rotation.md`](docs/codex-auto-rotation.md).
 
-### Variáveis de ambiente
+## Roteamento local de LLM
+
+Automações locais podem consultar `POST /api/llm-route` para usar GPT-5.5 Medium via Hermes OpenAI Codex quando houver limite disponível, com fallback automático para DeepSeek v4 Pro. A rota é protegida por `LIMITS_PANEL_AGENT_SECRET` e documentada em [`docs/llm-routing.md`](docs/llm-routing.md).
+
+## Variáveis principais
 
 | Variável | Descrição | Padrão |
 |----------|-----------|--------|

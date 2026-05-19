@@ -868,6 +868,94 @@ function rotationStatusPayload() {
   }
 }
 
+// ─── LLM routing for local automations ─────────────────────────────
+
+const LLM_ROUTING_DEFAULTS = {
+  primary: {
+    provider: 'openai-codex',
+    model: 'gpt-5.5',
+    reasoningEffort: 'medium',
+    label: 'GPT-5.5 Medium via Hermes OpenAI Codex',
+  },
+  fallback: {
+    provider: 'deepseek',
+    model: 'deepseek-v4-pro',
+    reasoningEffort: 'medium',
+    label: 'DeepSeek v4 Pro fallback',
+  },
+}
+
+function requireAgentSecret(req, res, next) {
+  if (!AGENT_SECRET) {
+    return res.status(503).json({ error: 'LIMITS_PANEL_AGENT_SECRET nao configurado no servidor' })
+  }
+  const auth = String(req.headers.authorization || '')
+  const provided = auth.replace(/^Bearer\s+/i, '').trim()
+  if (!safeTimingEqual(provided, AGENT_SECRET)) {
+    return res.status(401).json({ error: 'Token de agent invalido' })
+  }
+  return next()
+}
+
+async function llmRoutePayload({ task = 'local-automation' } = {}) {
+  const config = readRotationConfig()
+  const routes = []
+  const diagnostics = { task, checkedAt: new Date().toISOString(), primaryAvailable: false, rotation: null, reasons: [] }
+
+  try {
+    const credential = readHermesCodexCredential()
+    if (!credential?.access_token) {
+      diagnostics.reasons.push('sem_credencial_openai_codex')
+    } else {
+      const usage = normalizeUsage(await fetchUsageWithToken({
+        accessToken: credential.access_token,
+        accountId: credential.account_id || '',
+        label: 'Hermes OpenAI Codex',
+      }))
+      diagnostics.reasons = usageExhaustionReasons(usage, config)
+      diagnostics.primaryAvailable = diagnostics.reasons.length === 0
+      diagnostics.credentialLabel = credential.label || null
+      diagnostics.usage = {
+        allowed: usage.usage?.status?.allowed,
+        limitReached: usage.usage?.status?.limitReached,
+        windows: usage.usage?.windows || {},
+      }
+    }
+  } catch (error) {
+    diagnostics.reasons.push(`erro_openai_codex:${error.message}`)
+  }
+
+  if (!diagnostics.primaryAvailable && config.enabled) {
+    try {
+      diagnostics.rotation = await runCodexRotationOnce({ reason: `llm_route:${task}` })
+      const credential = readHermesCodexCredential()
+      if (credential?.access_token) {
+        const usage = normalizeUsage(await fetchUsageWithToken({
+          accessToken: credential.access_token,
+          accountId: credential.account_id || '',
+          label: 'Hermes OpenAI Codex',
+        }))
+        const reasons = usageExhaustionReasons(usage, config)
+        diagnostics.reasons = reasons
+        diagnostics.primaryAvailable = reasons.length === 0
+        diagnostics.credentialLabel = credential.label || null
+      }
+    } catch (error) {
+      diagnostics.rotation = { ok: false, error: error.message }
+    }
+  }
+
+  if (diagnostics.primaryAvailable) routes.push({ ...LLM_ROUTING_DEFAULTS.primary, role: 'primary' })
+  routes.push({ ...LLM_ROUTING_DEFAULTS.fallback, role: diagnostics.primaryAvailable ? 'fallback' : 'primary-fallback' })
+
+  return {
+    ok: true,
+    policy: 'gpt-5.5-medium-via-limits-panel-with-deepseek-v4-pro-fallback',
+    routes,
+    diagnostics,
+  }
+}
+
 // ─── Codex API ────────────────────────────────────────────────────
 
 async function fetchUsageWithToken({ accessToken, accountId = '', label = 'Codex' }) {
@@ -1088,7 +1176,7 @@ function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
 }
 
 function collectMachines() {
-  const configs = readMachinesConfig()
+  const configs = readMachinesConfig().filter((machine) => !machine.hidden)
   const now = new Date().toISOString()
   const localMetrics = collectPcMetrics()
   const agentHeartbeats = pruneExpiredHeartbeats(readAgentHeartbeats())
@@ -1525,6 +1613,14 @@ app.post('/api/codex-rotation/run-once', requireAdmin, requireAdminAction, async
   try {
     const result = await runCodexRotationOnce({ force: Boolean(req.body?.force), dryRun: Boolean(req.body?.dryRun), reason: req.body?.reason || 'manual' })
     res.json({ ok: true, result, ...rotationStatusPayload(), checkedAt: new Date().toISOString() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.post('/api/llm-route', requireAgentSecret, async (req, res) => {
+  try {
+    res.json(await llmRoutePayload({ task: req.body?.task || 'local-automation' }))
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
