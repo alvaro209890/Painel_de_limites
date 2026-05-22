@@ -26,6 +26,6 @@ module.exports = {
     // Keep alive
     exp_backoff_restart_delay: 100,
     // Memory limit — restart if leaking
-    max_memory_restart: '500M',
+    max_memory_restart: '1G',
   }],
 }

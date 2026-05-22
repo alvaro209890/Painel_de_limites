@@ -10,7 +10,15 @@ const app = express()
 app.use(express.json({ limit: '64kb' }))
 const API_PORT = Number(process.env.LIMITS_PANEL_PORT || 8787)
 const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
-const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || path.join(os.homedir(), '.codex', 'auth.json')
+const CODEX_DEFAULT_AUTH = path.join(os.homedir(), '.codex', 'auth.json')
+const CODEX_HOME_AUTH = process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'auth.json') : null
+// Prefere CODEX_HOME/auth.json se existir e for mais recente (o CLI 0.130+ escreve la)
+const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || (
+  CODEX_HOME_AUTH && fs.existsSync(CODEX_HOME_AUTH) &&
+  fs.statSync(CODEX_HOME_AUTH).mtime > fs.statSync(CODEX_DEFAULT_AUTH).mtime
+    ? CODEX_HOME_AUTH
+    : CODEX_DEFAULT_AUTH
+)
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
 const DIST_DIR = path.join(process.cwd(), 'dist')
 const MACHINES_CONFIG_FILE = path.join(process.cwd(), 'config', 'machines.json')
@@ -184,38 +192,47 @@ function atomicWriteJson(filePath, data) {
   chmodPrivate(filePath)
 }
 
-function extractEmailFromIdToken(auth) {
-  const idToken = auth?.tokens?.id_token
-  if (!idToken || typeof idToken !== 'string') return null
+/** Decodifica o payload (parte do meio) de um JWT com segurança. */
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null
   try {
-    const parts = idToken.split('.')
+    const parts = token.split('.')
     if (parts.length < 2) return null
     let payload = parts[1]
     payload = payload.replace(/-/g, '+').replace(/_/g, '/')
     const padding = 4 - (payload.length % 4)
     if (padding !== 4) payload += '='.repeat(padding)
-    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
-    return decoded.email || null
+    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
   } catch {
     return null
   }
 }
 
-function extractPlanTypeFromIdToken(auth) {
-  const idToken = auth?.tokens?.id_token
-  if (!idToken || typeof idToken !== 'string') return null
-  try {
-    const parts = idToken.split('.')
-    if (parts.length < 2) return null
-    let payload = parts[1]
-    payload = payload.replace(/-/g, '+').replace(/_/g, '/')
-    const padding = 4 - (payload.length % 4)
-    if (padding !== 4) payload += '='.repeat(padding)
-    const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
-    return decoded['https://api.openai.com/auth']?.chatgpt_plan_type || null
-  } catch {
-    return null
-  }
+/** Extrai email de qualquer JWT disponível no auth (id_token ou access_token). */
+function extractEmailFromTokens(auth) {
+  const decodedId = decodeJwtPayload(auth?.tokens?.id_token)
+  if (decodedId?.email) return decodedId.email
+  const decodedAt = decodeJwtPayload(auth?.tokens?.access_token)
+  if (decodedAt?.['https://api.openai.com/profile']?.email) return decodedAt['https://api.openai.com/profile'].email
+  return null
+}
+
+/** Extrai plan_type de qualquer JWT disponível no auth. */
+function extractPlanTypeFromTokens(auth) {
+  const decodedId = decodeJwtPayload(auth?.tokens?.id_token)
+  if (decodedId?.['https://api.openai.com/auth']?.chatgpt_plan_type) return decodedId['https://api.openai.com/auth'].chatgpt_plan_type
+  const decodedAt = decodeJwtPayload(auth?.tokens?.access_token)
+  if (decodedAt?.['https://api.openai.com/auth']?.chatgpt_plan_type) return decodedAt['https://api.openai.com/auth'].chatgpt_plan_type
+  return null
+}
+
+/** Extrai o chatgpt_account_id (UUID real da conta) de qualquer JWT disponível. */
+function extractChatgptAccountId(auth) {
+  const decodedId = decodeJwtPayload(auth?.tokens?.id_token)
+  if (decodedId?.['https://api.openai.com/auth']?.chatgpt_account_id) return decodedId['https://api.openai.com/auth'].chatgpt_account_id
+  const decodedAt = decodeJwtPayload(auth?.tokens?.access_token)
+  if (decodedAt?.['https://api.openai.com/auth']?.chatgpt_account_id) return decodedAt['https://api.openai.com/auth'].chatgpt_account_id
+  return null
 }
 
 function summarizeCodexAuth(authPath = CODEX_AUTH_PATH) {
@@ -223,9 +240,9 @@ function summarizeCodexAuth(authPath = CODEX_AUTH_PATH) {
   const auth = readJson(authPath)
   if (!auth) return { exists, email: null, planType: null, accountIdHint: null, updatedAt: exists ? fs.statSync(authPath).mtime.toISOString() : null }
   const tokens = auth.tokens || {}
-  const email = auth.email || auth.user?.email || tokens.email || extractEmailFromIdToken(auth) || null
-  const accountId = tokens.account_id || auth.account_id || null
-  const planType = extractPlanTypeFromIdToken(auth) || null
+  const email = auth.email || auth.user?.email || tokens.email || extractEmailFromTokens(auth) || null
+  const accountId = tokens.account_id || auth.account_id || extractChatgptAccountId(auth) || null
+  const planType = extractPlanTypeFromTokens(auth) || null
   const stat = exists ? fs.statSync(authPath) : null
   return {
     exists: true,
@@ -251,8 +268,12 @@ function listCodexProfiles() {
     const summary = summarizeCodexAuth(authPath)
     const profileAuth = readJson(authPath)
     const profileAccountId = profileAuth?.tokens?.account_id || null
-    // Perfil é ativo se o account_id coincide com a credencial ativa no Hermes
-    const isActive = Boolean(activeAccountId && profileAccountId && activeAccountId === profileAccountId)
+    const chatgptAccountId = extractChatgptAccountId(profileAuth)
+    const profileMatchId = chatgptAccountId || profileAccountId
+    const activeMatchId = extractChatgptAccountId({ tokens: { access_token: activeCredential?.access_token } }) || activeAccountId
+    // Match exato pelo slug no label do Hermes (quem foi ativado por ultimo)
+    const activeLabelSlug = activeLabel?.replace(/^perfil:/, '') || null
+    const isActive = Boolean(activeLabelSlug && activeLabelSlug === slug)
     return {
       slug,
       name: meta.name || slug,
@@ -266,7 +287,9 @@ function listCodexProfiles() {
     }
   })
   profiles.sort((a, b) => String(a.name).localeCompare(String(b.name), 'pt-BR'))
-  return { active: summarizeHermesCodexCredential(activeCredential), profiles }
+  // active mostra a conta do ~/.codex/auth.json atual (o que a CLI está usando agora)
+  const active = summarizeCodexAuth()
+  return { active, profiles }
 }
 
 function saveCurrentCodexProfile(name) {
@@ -393,8 +416,11 @@ function startCodexLoginProcess() {
   }
   backupActiveCodexAuth()
   const args = ['login', '--device-auth']
+  // Remove CODEX_HOME do ambiente para que o CLI escreva no ~/.codex/ padrao
+  const spawnEnv = { ...process.env }
+  delete spawnEnv['CODEX_HOME']
   const child = spawn('codex', args, {
-    env: process.env,
+    env: spawnEnv,
     cwd: os.homedir(),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -514,30 +540,30 @@ function formatReachedType(value) {
 
 // ─── CPU ─────────────────────────────────────────────────────────
 
-function readCpuStat() {
-  const stat = fs.readFileSync('/proc/stat', 'utf8')
-  const line = stat.split('\n').find(l => l.startsWith('cpu '))
-  if (!line) return null
-  const parts = line.trim().split(/\s+/).slice(1).map(Number)
-  const total = parts.reduce((a, b) => a + b, 0)
-  const idle = (parts[3] || 0)
-  return { total, idle }
-}
+let _cpuPrevTotal = 0n
+let _cpuPrevIdle = 0n
+let _cpuLastUsage = 0
 
 function calcCpuUsage() {
-  const a = readCpuStat()
-  if (!a) return null
-  // small busy-wait to sample delta
-  const start = Date.now()
-  while (Date.now() - start < 150) {
-    /* spin — 150ms is enough for a useful delta */
+  const cpus = os.cpus()
+  let total = 0n
+  let idle = 0n
+  for (const cpu of cpus) {
+    total += BigInt(cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq)
+    idle += BigInt(cpu.times.idle)
   }
-  const b = readCpuStat()
-  if (!b) return null
-  const totalDelta = b.total - a.total
-  const idleDelta = b.idle - a.idle
-  if (totalDelta <= 0) return 0
-  return Math.round(((totalDelta - idleDelta) / totalDelta) * 100 * 10) / 10
+  if (_cpuPrevTotal === 0n) {
+    _cpuPrevTotal = total
+    _cpuPrevIdle = idle
+    return 0
+  }
+  const totalDelta = Number(total - _cpuPrevTotal)
+  const idleDelta = Number(idle - _cpuPrevIdle)
+  _cpuPrevTotal = total
+  _cpuPrevIdle = idle
+  if (totalDelta <= 0) return _cpuLastUsage
+  _cpuLastUsage = Math.round(((totalDelta - idleDelta) / totalDelta) * 100 * 10) / 10
+  return _cpuLastUsage
 }
 
 // ─── Temperature ─────────────────────────────────────────────────
@@ -696,12 +722,29 @@ function writeRotationConfig(config) {
   return next
 }
 
+const MAX_ROTATION_EVENTS = 200
+
 function appendRotationEvent(event) {
   ensureProfileDirs()
   const payload = { at: new Date().toISOString(), ...event }
   fs.appendFileSync(ROTATION_LOG_FILE, `${JSON.stringify(payload)}\n`, { mode: 0o600 })
   chmodPrivate(ROTATION_LOG_FILE)
+  // Poda o arquivo se ultrapassou o limite
+  trimRotationLog()
   return payload
+}
+
+function trimRotationLog() {
+  try {
+    if (!fs.existsSync(ROTATION_LOG_FILE)) return
+    const content = fs.readFileSync(ROTATION_LOG_FILE, 'utf8')
+    const lines = content.trim().split('\n').filter(Boolean)
+    if (lines.length <= MAX_ROTATION_EVENTS) return
+    const keep = lines.slice(-MAX_ROTATION_EVENTS)
+    fs.writeFileSync(ROTATION_LOG_FILE, keep.join('\n') + '\n', { mode: 0o600 })
+  } catch {
+    // falha silenciosa na poda
+  }
 }
 
 function readRotationEvents(limit = 30) {
@@ -970,7 +1013,10 @@ async function fetchUsageWithToken({ accessToken, accountId = '', label = 'Codex
   }
   if (accountId) headers['ChatGPT-Account-ID'] = accountId
 
-  const response = await fetch('https://chatgpt.com/backend-api/wham/usage', { headers })
+  const response = await fetch('https://chatgpt.com/backend-api/wham/usage', {
+    headers,
+    signal: AbortSignal.timeout(10_000),
+  })
 
   const text = await response.text()
   if (!response.ok) {
@@ -1045,8 +1091,8 @@ function updateHermesCodexCredential({ accessToken, refreshToken, accountId, lab
 function summarizeHermesCodexCredential(credential) {
   if (!credential) return { exists: false, email: null, planType: null, accountIdHint: null, updatedAt: null }
   const accountId = credential.account_id || null
-  const email = extractEmailFromIdToken({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
-  const planType = extractPlanTypeFromIdToken({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
+  const email = extractEmailFromTokens({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
+  const planType = extractPlanTypeFromTokens({ tokens: { id_token: credential.id_token, access_token: credential.access_token } }) || null
   return {
     exists: true,
     email: redactEmail(email),
@@ -1141,7 +1187,7 @@ function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
   return {
     checkedAt: new Date().toISOString(),
     account: {
-      email: redactEmail(usage.email || extractEmailFromIdToken(readJson(authPath))),
+      email: redactEmail(usage.email || extractEmailFromTokens(readJson(authPath))),
       planType: usage.plan_type,
       userId: usage.user_id,
     },
@@ -1595,6 +1641,54 @@ app.post('/api/codex-login/cancel', requireAdmin, requireAdminAction, (_req, res
   res.json(cancelCodexLoginProcess())
 })
 
+app.post('/api/codex-login/auto-save', requireAdmin, requireAdminAction, (_req, res) => {
+  try {
+    const auth = readJson(CODEX_AUTH_PATH)
+    if (!auth) return res.status(400).json({ error: 'Nenhuma conta ativa no CLI' })
+
+    const email = extractEmailFromTokens(auth)
+    if (!email) return res.status(400).json({ error: 'Nao foi possivel extrair email da conta' })
+
+    const chatgptAccountId = extractChatgptAccountId(auth)
+    const profileName = email.trim() || 'conta-' + Date.now()
+
+    // Verifica se ja existe um perfil com a mesma conta (pelo chatgpt_account_id nos JWTs)
+    const allProfiles = listCodexProfiles().profiles
+    const existing = allProfiles.find((p) => {
+      const pAuth = readJson(path.join(CODEX_PROFILES_DIR, p.slug, 'auth.json'))
+      const pChatId = extractChatgptAccountId(pAuth)
+      return pChatId && chatgptAccountId && pChatId === chatgptAccountId
+    })
+
+    let slug
+    if (existing) {
+      // Atualiza o perfil existente com os novos tokens
+      slug = existing.slug
+      const dir = profilePath(slug)
+      const targetAuth = path.join(dir, 'auth.json')
+      fs.copyFileSync(CODEX_AUTH_PATH, targetAuth)
+      chmodPrivate(targetAuth)
+      // Atualiza metadado
+      const metaPath = path.join(dir, 'meta.json')
+      const meta = readJson(metaPath) || {}
+      meta.updatedAt = new Date().toISOString()
+      meta.name = profileName
+      atomicWriteJson(metaPath, meta)
+    } else {
+      // Cria novo perfil
+      const profile = saveCurrentCodexProfile(profileName)
+      slug = profile.slug
+    }
+
+    // Ativa o perfil
+    const activation = activateCodexProfile(slug)
+
+    res.json({ ok: true, slug, activation, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
 
 app.get('/api/codex-rotation', requireAdmin, (_req, res) => {
   res.json(rotationStatusPayload())
@@ -1621,6 +1715,34 @@ app.post('/api/codex-rotation/run-once', requireAdmin, requireAdminAction, async
 app.post('/api/llm-route', requireAgentSecret, async (req, res) => {
   try {
     res.json(await llmRoutePayload({ task: req.body?.task || 'local-automation' }))
+  } catch (error) {
+    res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+// ─── Codex credential endpoint for agents via Bearer token ──────
+//
+// Returns the current active Codex credential so remote agents (Vertex,
+// Hermes clones, etc.) can use GPT without having ~/.hermes/auth.json locally.
+// Auth: Bearer token via LIMITS_PANEL_AGENT_SECRET.
+//
+app.post('/api/codex-credential', requireAgentSecret, (_req, res) => {
+  try {
+    const credential = readHermesCodexCredential()
+    if (!credential?.access_token) {
+      return res.status(404).json({ error: 'Nenhuma credencial Codex ativa no momento', checkedAt: new Date().toISOString() })
+    }
+    res.json({
+      ok: true,
+      credential: {
+        access_token: credential.access_token,
+        account_id: credential.account_id || '',
+        base_url: credential.base_url || 'https://chatgpt.com/backend-api/codex',
+        label: credential.label || null,
+        source: credential.source || 'panel',
+      },
+      checkedAt: new Date().toISOString(),
+    })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
@@ -1658,9 +1780,10 @@ app.post('/api/agent/heartbeat', (req, res) => {
   }
   writeAgentHeartbeats(heartbeats)
 
-  // Auto-registro: se a máquina não existe em machines.json, adiciona
+  // Auto-registro: normaliza o machineId e verifica duplicatas (case-insensitive)
   const machines = readMachinesConfig()
-  const exists = machines.some((m) => m.id === machineId)
+  const normalizedId = machineId.toLowerCase().replace(/\s+/g, '-')
+  const exists = machines.some((m) => m.id.toLowerCase().replace(/\s+/g, '-') === normalizedId)
   if (!exists) {
     const displayName = machineId
       .replace(/^pc-/, 'PC ')
@@ -1668,14 +1791,14 @@ app.post('/api/agent/heartbeat', (req, res) => {
       .replace(/-/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase())
     machines.push({
-      id: machineId,
+      id: normalizedId,
       name: displayName,
       role: 'work',
       hostname: hostname || null,
       notes: `Registrado automaticamente pelo limits-agent. Edite o nome no painel.`,
     })
     atomicWriteJson(MACHINES_CONFIG_FILE, machines)
-    console.log(`[Painel] Novo agent registrado: ${machineId} -> ${displayName}`)
+    console.log(`[Painel] Novo agent registrado: ${normalizedId} -> ${displayName}`)
   }
 
   res.json({

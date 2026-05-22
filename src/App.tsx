@@ -171,16 +171,33 @@ function App() {
     }
   }, [authenticated])
 
+  const prevLoginRunningRef = useRef(false)
+
+  const autoSaveAndActivate = useCallback(async () => {
+    try {
+      const payload = await apiFetch<CodexProfilesPayload>('/api/codex-login/auto-save', { method: 'POST' })
+      setProfilesData(payload)
+      setProfilesError(null)
+    } catch (error) {
+      setProfilesError(error instanceof Error ? error.message : 'Erro ao salvar conta automaticamente')
+    }
+  }, [])
+
   const loadCodexLoginStatus = useCallback(async () => {
     if (!authenticated) return
     try {
       const payload = await apiFetch<CodexLoginStatus>('/api/codex-login/status')
       setCodexLogin(payload)
       openCodexLoginUrlIfReady(payload)
+      // Login completou (antes running, agora não) → salva+ativa automaticamente
+      if (prevLoginRunningRef.current && !payload.running && payload.exitCode === 0) {
+        void autoSaveAndActivate()
+      }
+      prevLoginRunningRef.current = payload.running
     } catch {
       // Ignora falha pontual; status de login é auxiliar.
     }
-  }, [authenticated, openCodexLoginUrlIfReady])
+  }, [authenticated, openCodexLoginUrlIfReady, autoSaveAndActivate])
 
   const loadCodexRotation = useCallback(async () => {
     if (!authenticated) return
@@ -251,13 +268,13 @@ function App() {
   }, [])
 
   const prepareCodexLoginPopup = useCallback(() => {
-    const popup = window.open('', 'codex-login', 'popup=yes,width=760,height=860')
+    const popup = window.open('', 'codex-login', 'width=820,height=900,toolbar=yes,scrollbars=yes')
     codexLoginPopupRef.current = popup
     if (!popup) {
       setProfilesError('O navegador bloqueou a janela de login. Libere pop-ups ou use o link que aparecer no painel.')
       return
     }
-    popup.document.write('<!doctype html><html><head><title>Login Codex</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:520px;padding:32px;text-align:center"><h1 style="color:white">Preparando login Codex...</h1><p>O painel está iniciando codex login --device-auth no servidor. Assim que a OpenAI retornar a URL, esta janela vai abrir a página de login automaticamente.</p></main></body></html>')
+    popup.document.write('<!doctype html><html><head><title>Login Codex</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:540px;padding:32px;text-align:center"><h1 style="color:white">Login Codex</h1><p>Aguardando URL de login do servidor...</p><p style="margin-top:24px;padding:16px;border:1px solid #334155;border-radius:12px;background:#1e293b;font-size:13px;line-height:1.6"><strong style="color:#fbbf24">⚠️ Importante:</strong><br>Para logar em uma conta DIFERENTE, copie o link abaixo e abra em uma <strong style="color:#67e8f9">janela anônima/privada</strong> (Ctrl+Shift+N).<br><br>Assim você pode fazer login com outra conta do ChatGPT sem interferir na sua sessão atual.</p></main></body></html>')
     popup.document.close()
   }, [])
 
