@@ -1081,6 +1081,10 @@ function updateHermesCodexCredential({ accessToken, refreshToken, accountId, lab
     if (label) pool[0].label = label
     pool[0].last_status = 'ok'
     pool[0].last_status_at = new Date().toISOString()
+    pool[0].last_error_code = null
+    pool[0].last_error_reason = null
+    pool[0].last_error_message = null
+    pool[0].last_error_reset_at = null
     pool[0].source = 'manual:panel_rotation'
   }
   auth.updated_at = new Date().toISOString()
