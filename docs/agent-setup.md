@@ -195,53 +195,66 @@ nohup /usr/local/bin/limits-agent --run &
 
 ## Instalação no Linux
 
-### Setup automático (recomendado)
+### Instalador automático recomendado
 
-Antes de tudo, o servidor precisa ter o token configurado
-(`LIMITS_PANEL_AGENT_SECRET`). Se já está configurado, vá direto
-para o PC remoto.
-
-No PC remoto, execute:
+No outro PC Linux, rode o instalador abaixo. Ele baixa `agent/limits-agent.py`, grava a configuração em `/root/.config/limits-agent/config.json`, instala o serviço `limits-agent` no systemd e inicia imediatamente.
 
 ```bash
-# 1. Baixar o script
+curl -fsSL https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/scripts/install-linux-agent.sh | bash
+```
+
+O script pergunta:
+- URL do painel: padrão `https://limites.cursar.space`
+- ID da máquina: padrão derivado do hostname, ex. `notebook-casa`
+- intervalo: padrão `60`
+- token: o mesmo `LIMITS_PANEL_AGENT_SECRET` configurado no servidor
+
+Também pode passar tudo por flag/env, útil para colar em outro PC:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/scripts/install-linux-agent.sh -o /tmp/install-limits-agent.sh
+bash /tmp/install-limits-agent.sh \
+  --server-url https://limites.cursar.space \
+  --machine-id notebook-casa \
+  --secret 'SEU_TOKEN_LIMITS_PANEL_AGENT_SECRET' \
+  --interval 60
+```
+
+Ou sem colocar o token no histórico do shell:
+
+```bash
+export LIMITS_PANEL_AGENT_SECRET='SEU_TOKEN_LIMITS_PANEL_AGENT_SECRET'
+curl -fsSL https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/scripts/install-linux-agent.sh \
+  | bash -s -- --machine-id notebook-casa --interval 60
+unset LIMITS_PANEL_AGENT_SECRET
+```
+
+Pronto. Depois do primeiro heartbeat, a máquina aparece em `https://limites.cursar.space` → **Máquinas**.
+
+> **Auto-registro:** se o `machine_id` não existir em `config/machines.json`, o servidor cria uma entrada automaticamente no primeiro heartbeat. Depois é só renomear no painel pelo botão ✎ ao lado do nome. Não adicione placeholder offline manualmente.
+
+### Instalação manual alternativa
+
+Se quiser fazer sem o instalador:
+
+```bash
 sudo curl -sSLo /usr/local/bin/limits-agent \
   https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
 sudo chmod +x /usr/local/bin/limits-agent
 
-# 2. Configurar (assistente interativo — pergunta URL, ID e token)
-limits-agent --setup
+# Como o serviço systemd roda via sudo/root, configure também como root:
+sudo /usr/local/bin/limits-agent \
+  --server-url https://limites.cursar.space \
+  --machine-id notebook-casa \
+  --secret 'SEU_TOKEN_LIMITS_PANEL_AGENT_SECRET' \
+  --interval 60
 
-# 3. Instalar como serviço (auto-start na inicialização)
-sudo limits-agent --install
+sudo /usr/local/bin/limits-agent --install
 ```
 
-Pronto. O agent já vai estar rodando e vai iniciar automaticamente
-toda vez que o PC ligar.
+### Configuração do servidor (se necessário)
 
-> **Auto-registro:** se o `machine_id` não existir em `config/machines.json`,
-> o servidor cria uma entrada automaticamente no primeiro heartbeat.
-> Depois é só renomear do painel (botão ✎ ao lado do nome).
-
-### Setup via flags (uma linha)
-
-Se já sabe os parâmetros, pode configurar de uma vez:
-
-```bash
-sudo curl -sSLo /usr/local/bin/limits-agent \
-  https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/agent/limits-agent.py
-sudo chmod +x /usr/local/bin/limits-agent
-
-# Cria config + já instala serviço
-limits-agent --server-url https://limites.cursar.space \
-             --machine-id pc-trabalho \
-             --secret SEU_TOKEN \
-  && sudo limits-agent --install
-```
-
-### Setup manual (alternativa)
-
-Se preferir configurar manualmente, primeiro configure o servidor:
+Se o endpoint de heartbeat ainda não estiver habilitado, configure o token no servidor:
 
 ```bash
 # Editar ~/.hermes/.env ou o ambiente do PM2

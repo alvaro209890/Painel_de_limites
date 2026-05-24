@@ -9,7 +9,7 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 ## Funcionalidades
 
 ### 🧭 Central DevOps Pessoal
-- **Módulo Máquinas:** PC servidor com métricas reais; PC trabalho e PC reserva cadastrados como offline até instalação do agent.
+- **Módulo Máquinas:** PC servidor com métricas locais reais e PCs remotos via `limits-agent`/heartbeat; novas máquinas são auto-registradas no primeiro envio.
 - **Módulo IA:** OpenAI/Codex CLI, Hermes OpenAI Codex, DeepSeek e métricas locais por modelo.
 - **Módulo Contas Codex/Hermes:** mostra a conta usada pelo Hermes (`~/.hermes/auth.json`) separada da conta do Codex CLI (`~/.codex/auth.json`), além de login CLI, perfis salvos, ativação de contas com backup e rotação automática da CLI.
 - **Módulo Projetos:** serviços, portas, healthchecks, deploy target e links públicos.
@@ -56,6 +56,7 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 | `GET` | `/api/alerts` | Alertas derivados *(admin)* |
 | `GET` | `/api/limits` | Limites Codex (wham API + SQLite local) *(admin)* |
 | `GET` | `/api/pc-metrics` | Métricas do servidor (CPU, RAM, disco, temp) *(admin)* |
+| `POST` | `/api/agent/heartbeat` | Heartbeat de métricas de PCs remotos via `limits-agent` *(agent secret)* |
 | `GET` | `/api/deepseek` | Saldo da DeepSeek *(admin)* |
 | `GET` | `/api/codex-profiles/status` | Status de autenticação admin |
 | `POST` | `/api/codex-profiles/login` | Autenticar como admin |
@@ -115,8 +116,9 @@ Ou use um tunnel persistente apontando para o domínio `limites.cursar.space`.
 - **Limites Codex:** `~/.codex/auth.json` + endpoint interno `https://chatgpt.com/backend-api/wham/usage`
 - **Métricas locais:** `~/.codex/state_5.sqlite`, tabela `threads`
 - **Saldo DeepSeek:** `https://api.deepseek.com/v1/user/balance` (lê chave de `~/.hermes/.env`)
-- **Métricas do PC:** `/proc/stat`, `sensors`, `df`, `os` do Node.js
-- **Máquinas:** `config/machines.json`
+- **Métricas do PC servidor:** `/proc/stat`, `sensors`, `df`, `os` do Node.js
+- **Métricas de PCs remotos:** `agent/limits-agent.py` envia `POST /api/agent/heartbeat`; últimos heartbeats ficam em `~/.config/codex-profiles/agents-heartbeats.json`
+- **Máquinas:** `config/machines.json` + auto-registro quando um `machine_id` novo envia heartbeat
 - **Projetos:** `config/projects.json` + `pm2 jlist` + HTTP healthcheck
 
 ---
@@ -127,13 +129,32 @@ Arquivo: `config/machines.json`
 
 ```json
 [
-  { "id": "pc-servidor", "name": "PC servidor", "role": "server", "hostname": "server-desktop" },
-  { "id": "pc-trabalho", "name": "PC trabalho", "role": "work", "hostname": null },
-  { "id": "pc-reserva", "name": "PC reserva", "role": "reserve", "hostname": null }
+  { "id": "pc-servidor", "name": "PC servidor", "role": "server", "hostname": "server-desktop" }
 ]
 ```
 
-No MVP, apenas `role: "server"` coleta métricas reais locais. Os demais PCs aparecem offline até a futura instalação do agent.
+- `role: "server"` coleta métricas locais da máquina onde o Painel roda.
+- PCs remotos não precisam ser cadastrados antes: instale o `limits-agent` no outro Linux e o servidor cria a entrada automaticamente no primeiro heartbeat.
+- Evite placeholders offline; eles poluem o painel.
+
+### Instalar métricas em outro PC Linux
+
+No outro PC Linux, rode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/scripts/install-linux-agent.sh | bash
+```
+
+Ou com parâmetros:
+
+```bash
+export LIMITS_PANEL_AGENT_SECRET='SEU_TOKEN_LIMITS_PANEL_AGENT_SECRET'
+curl -fsSL https://raw.githubusercontent.com/alvaro209890/Painel_de_limites/main/scripts/install-linux-agent.sh \
+  | bash -s -- --machine-id notebook-casa --interval 60
+unset LIMITS_PANEL_AGENT_SECRET
+```
+
+Documentação completa: [`docs/agent-setup.md`](docs/agent-setup.md).
 
 ## Configuração de projetos
 
