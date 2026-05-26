@@ -2223,8 +2223,15 @@ async function probeAcerProxy() {
     openCodeZenState._lastAcerProbeAt = now
     try {
       const resp = await fetch(ACER_PROXY_URL + '/health', { signal: AbortSignal.timeout(5_000) })
+      const wasOnline = openCodeZenState.acerProxyOnline
       openCodeZenState.acerProxyOnline = resp.ok
-    } catch {
+      if (wasOnline !== resp.ok) {
+        console.log('[AcerProxy] Status: ' + (resp.ok ? 'ONLINE' : 'OFFLINE') + ' (HTTP ' + resp.status + ')')
+      }
+    } catch (e) {
+      if (openCodeZenState.acerProxyOnline !== false) {
+        console.log('[AcerProxy] Status: OFFLINE (' + e.message + ')')
+      }
       openCodeZenState.acerProxyOnline = false
     }
   }
@@ -2838,6 +2845,9 @@ function startStaticServer() {
 // ─── Graceful startup ───────────────────────────────────────────
 
 scheduleCodexRotation()
+// Probe Acer proxy health on startup and every 30s
+setTimeout(() => probeAcerProxy().catch(() => {}), 1000)
+setInterval(() => probeAcerProxy().catch(() => {}), 30000)
 
 const server = app.listen(API_PORT, '0.0.0.0', () => {
   console.log(`Painel de limites API em http://127.0.0.1:${API_PORT}`)
