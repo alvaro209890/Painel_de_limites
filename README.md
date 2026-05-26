@@ -200,7 +200,8 @@ Campos principais:
 
 | Caminho | Descrição |
 |---------|-----------|
-| `~/.codex/auth.json` | Conta ativa (usada pelo Codex CLI) |
+| `~/.hermes/auth.json` | Credential pool usado pelo Hermes para `openai-codex` |
+| `~/.codex/auth.json` | Conta ativa do Codex CLI standalone, usada para login e criação de perfis |
 | `~/.config/codex-profiles/profiles/<slug>/auth.json` | Perfis salvos |
 | `~/.config/codex-profiles/backups/` | Backups automáticos |
 | `~/.config/codex-profiles/admin-secret.json` | Senha admin local |
@@ -213,13 +214,18 @@ Campos principais:
 2. Clique em **"Iniciar login Codex"**
 3. Abra o link/código retornado pelo CLI
 4. Depois do login, salve a conta ativa como perfil ("Salvar como perfil")
-5. Use **"Ativar"** em um perfil salvo para copiar o `auth.json` dele para `~/.codex/auth.json`
+5. Use **"Ativar"** em um perfil salvo para copiar os tokens dele para `~/.hermes/auth.json` → `credential_pool.openai-codex`
 6. Opcional: ative **Rotação automática** para o backend alternar contas quando detectar limite esgotado
 
+Cada card de perfil salvo mostra o limite disponível da conta antes de ativá-la:
+
+- **Disponível agora:** percentual restante da janela principal de 5 horas.
+- **Janela semanal:** percentual restante da janela secundária semanal.
+- **Erro da conta:** exibido no card quando o token foi invalidado ou não permite consulta de uso.
 
 ### Rotação automática de contas
 
-A rotação automática roda no backend/PM2 e não depende do navegador aberto. Quando a conta ativa aparece bloqueada, não permitida, ou com janela de uso acima do limite configurado, o painel testa os perfis salvos e ativa o primeiro que ainda tiver limite disponível.
+A rotação automática roda no backend/PM2 e não depende do navegador aberto. Quando a conta ativa do Hermes aparece bloqueada, não permitida, ou com janela de uso acima do limite configurado, o painel testa os perfis salvos e ativa o primeiro que ainda tiver limite disponível.
 
 Configuração padrão:
 

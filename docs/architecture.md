@@ -118,11 +118,12 @@ A aba de contas mostra a credencial Hermes em destaque e mantém as ferramentas 
 
 - login Codex CLI por device flow;
 - salvar a conta atual da CLI como perfil;
-- ativar perfil salvo com backup automático;
+- ativar perfil salvo no credential pool do Hermes com backup automático;
+- consultar limite disponível de cada perfil salvo antes da ativação;
 - excluir perfil;
-- configurar e executar rotação automática da CLI.
+- configurar e executar rotação automática para o Hermes `openai-codex`.
 
-Importante: a rotação altera `~/.codex/auth.json`; ela não altera automaticamente `~/.hermes/auth.json`.
+Importante: a rotação altera `~/.hermes/auth.json` no `credential_pool.openai-codex`. Ela não altera `~/.codex/auth.json`, que continua sendo apenas a conta do Codex CLI standalone.
 
 ### Projetos
 

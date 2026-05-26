@@ -128,6 +128,10 @@ Na seção **Contas Codex / Hermes**, após login admin, existem cards separados
 
 - **Hermes OpenAI Codex:** mostra a credencial ativa no credential pool do Hermes (`~/.hermes/auth.json`).
 - **Codex CLI (standalone):** mostra a conta ativa da CLI em `~/.codex/auth.json` (apenas para comparação).
+- **Perfis salvos do Codex CLI:** cada card consulta o `auth.json` salvo sem ativar a conta e mostra:
+  - percentual restante da janela principal de 5 horas;
+  - percentual restante da janela semanal;
+  - erro individual da conta, quando o token estiver inválido ou sem permissão.
 - **Rotação automática Codex CLI:**
   - status ativa/desativada;
   - agendamento;
@@ -144,6 +148,7 @@ Na seção **Contas Codex / Hermes**, após login admin, existem cards separados
 - A rotação não troca conta enquanto um login Codex está em andamento.
 - Existe cooldown entre tentativas automáticas.
 - Tokens não são enviados ao navegador.
+- O perfil ativo do Hermes é excluído da lista de candidatos, mesmo quando o match precisa ser feito por `chatgpt_account_id`.
 - Toda ativação faz backup do `~/.hermes/auth.json` anterior.
 - O modo `dryRun` testa a lógica sem alterar a conta.
 - O modo `notifyOnly` permite simular continuamente sem trocar.
@@ -157,7 +162,8 @@ subagente. Um processo Codex já aberto continua usando a autenticação carrega
 antes da troca.
 
 O `~/.codex/auth.json` (Codex CLI standalone) **não é alterado** pela rotação
-automática, apenas pela ativação manual de perfis via UI.
+automática nem pela ativação manual de perfis via UI. Ele só muda durante login
+ou operações diretas do Codex CLI standalone.
 
 ## Operação
 

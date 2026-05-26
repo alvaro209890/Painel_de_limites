@@ -353,7 +353,7 @@ function App() {
   }, [newProfileName])
 
   const activateCodexProfile = useCallback(async (slug: string) => {
-    if (!window.confirm('Ativar este perfil vai substituir ~/.codex/auth.json atual, com backup. Continuar?')) return
+    if (!window.confirm('Ativar este perfil vai substituir a credencial OpenAI Codex do Hermes em ~/.hermes/auth.json, com backup. Continuar?')) return
     try {
       setProfilesBusy(true)
       setProfilesError(null)
