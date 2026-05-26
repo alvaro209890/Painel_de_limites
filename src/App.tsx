@@ -6,7 +6,7 @@ import { AiModule } from './modules/ai/AiModule'
 import { CodexAccountsModule } from './modules/codex-accounts/CodexAccountsModule'
 import { MachinesModule } from './modules/machines/MachinesModule'
 import { ProjectsModule } from './modules/projects/ProjectsModule'
-import type { CodexAdminStatus, CodexLoginStatus, CodexProfilesPayload, CodexRotationPayload, DashboardOverviewPayload, MachinesPayload } from './types/dashboard'
+import type { CodexAdminStatus, CodexLoginStatus, CodexProfilesPayload, CodexRotationPayload, DashboardOverviewPayload, GeminiLoginStatus, MachinesPayload } from './types/dashboard'
 import { formatDate } from './utils/format'
 
 type TabId = 'machines' | 'ai' | 'codexAccounts' | 'projects' | 'alerts'
@@ -19,9 +19,101 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'alerts', label: 'Alertas', icon: '🚨' },
 ]
 
+function pct(value?: number | null) {
+  return typeof value === 'number' ? `${Math.round(value)}%` : '--'
+}
+
+function MachineSplitPanel({ dashboard, profilesTotal }: { dashboard: DashboardOverviewPayload | null; profilesTotal: number }) {
+  const machines = dashboard?.machines || []
+  const hermesUsage = dashboard?.ai.limits?.hermesCodex?.usage
+  const codexUsage = dashboard?.ai.limits?.codexCli?.usage
+  const deepSeekBalance = dashboard?.ai.deepseek?.balance.balance_infos?.[0]?.total_balance
+
+  const machineCards = machines.map((machine) => {
+    const agentNames = machine.agents?.length
+      ? machine.agents.map((agent) => agent.description ? `${agent.name} • ${agent.description}` : agent.name)
+      : machine.agent
+        ? ['limits-agent • heartbeat e métricas']
+        : []
+    const isServer = machine.role === 'server'
+    return {
+      name: machine.name,
+      host: machine.hostname || machine.notes || machine.id,
+      status: machine.status,
+      label: isServer ? 'servidor / serviços' : 'PC de trabalho / telemetria',
+      title: isServer ? 'Servidor IMAP' : machine.name,
+      stack: agentNames.length ? agentNames.join(' + ') : (isServer ? 'painel, API, túneis e serviços' : 'heartbeat e métricas do PC'),
+      detail: isServer
+        ? 'Concentra o Painel de Limites, API local, Cloudflare Tunnel, PM2 e serviços que ficam ligados.'
+        : 'Envia estado do computador para esta central: CPU, RAM, disco, temperatura e último sinal.',
+    }
+  })
+
+  if (!machineCards.length) {
+    machineCards.push({
+      name: 'Sem PCs cadastrados',
+      host: 'aguardando heartbeat',
+      status: 'unknown' as const,
+      label: 'telemetria indisponível',
+      title: 'Nenhum agent reportando',
+      stack: 'sem dados',
+      detail: 'Quando um limits-agent enviar heartbeat, ele aparece automaticamente aqui.',
+    })
+  }
+
+  return (
+    <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+      <div className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-4 shadow-2xl shadow-indigo-950/20 backdrop-blur sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-indigo-200/80">Mapa real dos PCs</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white sm:text-3xl">Onde o painel está vendo agentes agora</h2>
+          </div>
+          <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-semibold text-emerald-100">
+            {machines.filter((machine) => machine.status === 'online').length}/{machines.length} PCs online
+          </span>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          {machineCards.map((route) => (
+            <article key={`${route.name}-${route.host}`} className="rounded-2xl border border-white/10 bg-black/25 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <span className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-300">{route.name}</span>
+                <span className={`h-2.5 w-2.5 rounded-full ${route.status === 'online' ? 'bg-emerald-300 shadow-[0_0_18px_rgba(16,185,129,.8)]' : 'bg-amber-300'}`} />
+              </div>
+              <h3 className="text-lg font-semibold tracking-[-0.02em] text-white">{route.title}</h3>
+              <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-indigo-200/80">{route.label}</p>
+              <p className="mt-3 text-sm leading-6 text-slate-400">{route.detail}</p>
+              <p className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 font-mono text-[11px] leading-5 text-slate-300">{route.stack}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Quota Codex Hermes</p>
+          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">{pct(hermesUsage?.windows.primary?.remainingPercent)}</p>
+          <p className="mt-1 text-sm text-slate-400">restante na janela principal • {profilesTotal} perfis salvos</p>
+        </div>
+        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Codex CLI standalone</p>
+          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">{pct(codexUsage?.windows.primary?.remainingPercent)}</p>
+          <p className="mt-1 text-sm text-slate-400">conta local separada para uso manual quando necessário</p>
+        </div>
+        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4 sm:col-span-2 xl:col-span-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">DeepSeek API</p>
+          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">US$ {deepSeekBalance || '--'}</p>
+          <p className="mt-1 text-sm text-slate-400">provider econômico monitorado pelo painel</p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function TabBar({ active, onChange }: { active: TabId; onChange: (tab: TabId) => void }) {
   return (
-    <nav className="grid gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-1 shadow-lg sm:flex" role="tablist">
+    <nav className="grid gap-2 rounded-2xl border border-white/10 bg-[#0f1011]/90 p-1 shadow-lg shadow-black/20 sm:flex" role="tablist">
       {TABS.map((tab) => {
         const selected = tab.id === active
         return (
@@ -32,8 +124,8 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (tab: TabId) =>
             onClick={() => onChange(tab.id)}
             className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-black transition-all ${
               selected
-                ? 'bg-gradient-to-br from-cyan-300/20 to-emerald-300/20 text-white shadow-sm shadow-cyan-950/30'
-                : 'text-slate-400 hover:bg-white/[0.03] hover:text-slate-200'
+                ? 'bg-white/[0.07] text-white shadow-sm shadow-black/30 ring-1 ring-white/10'
+                : 'text-slate-400 hover:bg-white/[0.035] hover:text-slate-200'
             }`}
             type="button"
           >
@@ -56,13 +148,13 @@ function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }
 }) {
   return (
     <div className="mx-auto flex min-h-[60vh] w-full max-w-xl items-center justify-center">
-      <section className="w-full rounded-[2rem] border border-white/10 bg-white/[0.05] p-6 shadow-2xl shadow-cyan-950/20 backdrop-blur sm:p-8">
-        <p className="mb-3 inline-flex rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.22em] text-cyan-200">
+      <section className="w-full rounded-[2rem] border border-white/10 bg-[#0f1011]/85 p-6 shadow-2xl shadow-black/30 backdrop-blur sm:p-8">
+        <p className="mb-3 inline-flex rounded-full border border-indigo-300/20 bg-indigo-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-indigo-200">
           Acesso privado
         </p>
-        <h1 className="text-3xl font-black tracking-tight text-white">Central DevOps Pessoal</h1>
+        <h1 className="text-3xl font-black tracking-tight text-white">Central de Agentes e PCs</h1>
         <p className="mt-3 text-sm leading-6 text-slate-400">
-          O painel agora protege limites de IA, métricas do servidor, saldo de API, projetos e alertas. Entre como admin para visualizar os módulos.
+          Mapa privado de como Hermes, Codex, DeepSeek e os agents de heartbeat rodam entre o servidor e seus PCs. Entre como admin para ver limites, máquinas, projetos e alertas.
         </p>
 
         {!status?.adminConfigured && (
@@ -85,7 +177,7 @@ function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }
           </label>
           {error && <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-3 text-sm text-rose-100">{error}</p>}
           <button
-            className="w-full rounded-2xl bg-cyan-300 px-5 py-3 font-black text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-2xl bg-indigo-400 px-5 py-3 font-semibold text-white transition hover:bg-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
             type="submit"
             disabled={busy || !password.trim() || !status?.adminConfigured}
           >
@@ -106,6 +198,8 @@ function App() {
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [profilesData, setProfilesData] = useState<CodexProfilesPayload | null>(null)
   const [codexLogin, setCodexLogin] = useState<CodexLoginStatus | null>(null)
+  const [geminiLogin, setGeminiLogin] = useState<GeminiLoginStatus | null>(null)
+  const [geminiAuthCode, setGeminiAuthCode] = useState('')
   const [codexRotation, setCodexRotation] = useState<CodexRotationPayload | null>(null)
   const [profilesError, setProfilesError] = useState<string | null>(null)
   const [rotationError, setRotationError] = useState<string | null>(null)
@@ -115,6 +209,7 @@ function App() {
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [busy, setBusy] = useState(false)
   const codexLoginPopupRef = useRef<Window | null>(null)
+  const geminiLoginPopupRef = useRef<Window | null>(null)
 
   const authenticated = Boolean(adminStatus?.authenticated)
 
@@ -160,6 +255,12 @@ function App() {
     if (popup && !popup.closed && popup.location.href !== status.loginUrl) popup.location.href = status.loginUrl
   }, [])
 
+  const openGeminiLoginUrlIfReady = useCallback((status: GeminiLoginStatus | null) => {
+    if (!status?.loginUrl) return
+    const popup = geminiLoginPopupRef.current
+    if (popup && !popup.closed && popup.location.href !== status.loginUrl) popup.location.href = status.loginUrl
+  }, [])
+
   const loadCodexProfiles = useCallback(async () => {
     if (!authenticated) return
     try {
@@ -199,6 +300,18 @@ function App() {
     }
   }, [authenticated, openCodexLoginUrlIfReady, autoSaveAndActivate])
 
+  const loadGeminiLoginStatus = useCallback(async () => {
+    if (!authenticated) return
+    try {
+      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/status')
+      setGeminiLogin(payload)
+      openGeminiLoginUrlIfReady(payload)
+      if (!payload.running && payload.exitCode === 0) setGeminiAuthCode('')
+    } catch {
+      // Ignora falha pontual; status de login é auxiliar.
+    }
+  }, [authenticated, openGeminiLoginUrlIfReady])
+
   const loadCodexRotation = useCallback(async () => {
     if (!authenticated) return
     try {
@@ -213,8 +326,9 @@ function App() {
   const refreshCodexAccounts = useCallback(() => {
     void loadCodexProfiles()
     void loadCodexLoginStatus()
+    void loadGeminiLoginStatus()
     void loadCodexRotation()
-  }, [loadCodexLoginStatus, loadCodexProfiles, loadCodexRotation])
+  }, [loadCodexLoginStatus, loadCodexProfiles, loadCodexRotation, loadGeminiLoginStatus])
 
   const saveCurrentCodexProfile = useCallback(async () => {
     const name = newProfileName.trim()
@@ -305,6 +419,66 @@ function App() {
     }
   }, [])
 
+  const prepareGeminiLoginPopup = useCallback(() => {
+    const popup = window.open('', 'gemini-login', 'width=900,height=900,toolbar=yes,scrollbars=yes')
+    geminiLoginPopupRef.current = popup
+    if (!popup) {
+      setProfilesError('O navegador bloqueou a janela de login Gemini. Libere pop-ups ou use o link que aparecer no painel.')
+      return
+    }
+    popup.document.write('<!doctype html><html><head><title>Login Gemini CLI</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:600px;padding:32px;text-align:center"><h1 style="color:white">Login Gemini CLI</h1><p>Aguardando URL de login do Google...</p><p style="margin-top:24px;padding:16px;border:1px solid #334155;border-radius:12px;background:#1e293b;font-size:13px;line-height:1.6"><strong style="color:#fbbf24">⚠️ Importante:</strong><br>Depois de autorizar no Google, copie o código exibido e cole no campo <strong style="color:#67e8f9">Código Gemini</strong> no Painel de Limites.</p></main></body></html>')
+    popup.document.close()
+  }, [])
+
+  const startGeminiLogin = useCallback(async () => {
+    prepareGeminiLoginPopup()
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      setGeminiAuthCode('')
+      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/start', { method: 'POST' })
+      setGeminiLogin(payload)
+      openGeminiLoginUrlIfReady(payload)
+    } catch (error) {
+      setProfilesError(error instanceof Error ? error.message : 'Erro ao iniciar login Gemini')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }, [openGeminiLoginUrlIfReady, prepareGeminiLoginPopup])
+
+  const submitGeminiLoginCode = useCallback(async () => {
+    const code = geminiAuthCode.trim()
+    if (!code) {
+      setProfilesError('Cole o código de autorização do Google para concluir o login Gemini.')
+      return
+    }
+    try {
+      setProfilesBusy(true)
+      setProfilesError(null)
+      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/submit-code', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      })
+      setGeminiLogin(payload)
+    } catch (error) {
+      setProfilesError(error instanceof Error ? error.message : 'Erro ao enviar código Gemini')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }, [geminiAuthCode])
+
+  const cancelGeminiLogin = useCallback(async () => {
+    try {
+      setProfilesBusy(true)
+      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/cancel', { method: 'POST' })
+      setGeminiLogin(payload)
+    } catch (error) {
+      setProfilesError(error instanceof Error ? error.message : 'Erro ao cancelar login Gemini')
+    } finally {
+      setProfilesBusy(false)
+    }
+  }, [])
+
   const updateCodexRotationConfig = useCallback(async (config: Partial<CodexRotationPayload['config']>) => {
     try {
       setProfilesBusy(true)
@@ -364,6 +538,8 @@ function App() {
       setDashboard(null)
       setProfilesData(null)
       setCodexLogin(null)
+      setGeminiLogin(null)
+      setGeminiAuthCode('')
       setCodexRotation(null)
       setAdminStatus((current) => current ? { ...current, authenticated: false } : current)
       setBusy(false)
@@ -394,10 +570,10 @@ function App() {
   useEffect(() => {
     if (!authenticated || tab !== 'codexAccounts') return
     const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void loadCodexLoginStatus()
+      if (document.visibilityState === 'visible') { void loadCodexLoginStatus(); void loadGeminiLoginStatus() }
     }, 2_000)
     return () => window.clearInterval(interval)
-  }, [authenticated, loadCodexLoginStatus, tab])
+  }, [authenticated, loadCodexLoginStatus, loadGeminiLoginStatus, tab])
 
   useEffect(() => {
     if (!authenticated || tab !== 'machines') return
@@ -426,6 +602,8 @@ function App() {
           profilesData={profilesData}
           hermesCodex={dashboard?.ai.limits?.hermesCodex || null}
           loginStatus={codexLogin}
+          geminiLoginStatus={geminiLogin}
+          geminiAuthCode={geminiAuthCode}
           rotationStatus={codexRotation}
           error={profilesError}
           rotationError={rotationError}
@@ -437,6 +615,10 @@ function App() {
           onDelete={deleteCodexProfile}
           onStartLogin={startCodexLogin}
           onCancelLogin={cancelCodexLogin}
+          onStartGeminiLogin={startGeminiLogin}
+          onCancelGeminiLogin={cancelGeminiLogin}
+          onGeminiAuthCodeChange={setGeminiAuthCode}
+          onSubmitGeminiCode={submitGeminiLoginCode}
           onUpdateRotation={updateCodexRotationConfig}
           onRunRotation={runCodexRotation}
           onRefresh={refreshCodexAccounts}
@@ -448,8 +630,9 @@ function App() {
   })()
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[#080a0f] text-slate-100">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.18),transparent_32%),radial-gradient(circle_at_80%_20%,rgba(34,197,94,0.12),transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.8),rgba(2,6,23,0.95))]" />
+    <main className="min-h-screen overflow-x-hidden bg-[#08090a] text-slate-100">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(113,112,255,0.18),transparent_34%),radial-gradient(circle_at_84%_12%,rgba(16,185,129,0.10),transparent_28%),linear-gradient(180deg,rgba(8,9,10,0.92),rgba(1,1,2,1))]" />
+      <div className="pointer-events-none fixed inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(255,255,255,.7)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.7)_1px,transparent_1px)] [background-size:48px_48px]" />
       <div className="relative mx-auto flex w-full max-w-7xl flex-col gap-6 px-3 py-4 sm:px-8 sm:py-8 lg:px-10">
         {loadingStatus ? (
           <div className="py-20 text-center text-slate-400">Verificando sessão...</div>
@@ -464,36 +647,37 @@ function App() {
           />
         ) : (
           <>
-            <header className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-2xl shadow-cyan-950/20 backdrop-blur sm:rounded-[2rem] sm:p-6">
-              <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <header className="overflow-hidden rounded-[2rem] border border-white/10 bg-[#0f1011]/85 p-4 shadow-2xl shadow-black/30 backdrop-blur sm:p-6">
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                  <p className="mb-3 inline-flex rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.24em] text-cyan-200">
-                    Central DevOps
+                  <p className="mb-3 inline-flex rounded-full border border-indigo-300/20 bg-indigo-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-indigo-200">
+                    Runtime pessoal • agentes + máquinas
                   </p>
-                  <h1 className="max-w-4xl text-3xl font-black tracking-tight text-white sm:text-6xl">Servidor Interno</h1>
-                  <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400 sm:text-base">
-                    Máquinas, IA, projetos e alertas em uma única central privada. Dados sensíveis ficam atrás do login admin.
+                  <h1 className="max-w-5xl text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">Central de Agentes do Álvaro</h1>
+                  <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-400 sm:text-base">
+                    Uma visão atual de onde cada agente roda, quais contas de IA alimentam o trabalho e como o servidor e o notebook se dividem na operação.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm font-black text-cyan-100 transition hover:bg-cyan-300/15" onClick={() => void loadDashboard()} type="button">
-                    Atualizar agora
+                  <button className="rounded-2xl border border-indigo-300/25 bg-indigo-400/15 px-4 py-3 text-sm font-semibold text-indigo-100 transition hover:bg-indigo-400/25" onClick={() => void loadDashboard()} type="button">
+                    Sincronizar agora
                   </button>
-                  <button className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-black text-slate-200 transition hover:bg-white/[0.08]" onClick={() => void logout()} type="button" disabled={busy}>
+                  <button className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-white/[0.08]" onClick={() => void logout()} type="button" disabled={busy}>
                     Sair
                   </button>
                 </div>
               </div>
 
-              <div className="mt-6 grid gap-3 md:grid-cols-5">
-                <div className="rounded-2xl bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Máquinas</p><p className="mt-1 text-xl font-black">{counts.machinesOnline}/{counts.machinesTotal}</p></div>
-                <div className="rounded-2xl bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Perfis Codex</p><p className="mt-1 text-xl font-black">{counts.profilesTotal}</p></div>
-                <div className="rounded-2xl bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Projetos</p><p className="mt-1 text-xl font-black">{counts.projectsOnline}/{counts.projectsTotal}</p></div>
-                <div className="rounded-2xl bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Alertas críticos</p><p className="mt-1 text-xl font-black text-rose-100">{counts.criticalAlerts}</p></div>
-                <div className="rounded-2xl bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Atualizado</p><p className="mt-1 text-sm font-bold">{formatDate(dashboard?.checkedAt)}</p></div>
+              <div className="mt-7 grid gap-3 md:grid-cols-5">
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">PCs online</p><p className="mt-1 text-xl font-semibold">{counts.machinesOnline}/{counts.machinesTotal}</p></div>
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Perfis Codex</p><p className="mt-1 text-xl font-semibold">{counts.profilesTotal}</p></div>
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Projetos servidos</p><p className="mt-1 text-xl font-semibold">{counts.projectsOnline}/{counts.projectsTotal}</p></div>
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Críticos</p><p className="mt-1 text-xl font-semibold text-rose-100">{counts.criticalAlerts}</p></div>
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Atualizado</p><p className="mt-1 text-sm font-semibold">{formatDate(dashboard?.checkedAt)}</p></div>
               </div>
             </header>
 
+            <MachineSplitPanel dashboard={dashboard} profilesTotal={counts.profilesTotal} />
             <TabBar active={tab} onChange={setTab} />
             {moduleContent}
           </>

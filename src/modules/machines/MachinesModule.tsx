@@ -17,6 +17,19 @@ function mainDisk(machine: DashboardMachine) {
   return machine.metrics?.disks?.[0] || null
 }
 
+function machineRoleLabel(role: DashboardMachine['role']) {
+  if (role === 'server') return 'servidor fixo'
+  if (role === 'work') return 'estação de trabalho'
+  if (role === 'reserve') return 'reserva'
+  return 'outro papel'
+}
+
+function machineMission(machine: DashboardMachine) {
+  if (machine.role === 'server') return 'Hospeda Hermes Gateway, túneis, APIs, PM2, Docker e serviços que precisam ficar ligados.'
+  if (machine.role === 'work') return 'Notebook de uso diário: envia telemetria, opera arquivos/projetos e serve como posto de comando.'
+  return machine.notes || 'Máquina monitorada pelo painel.'
+}
+
 export function MachinesModule({ machines, loading, error, onRefresh }: MachinesModuleProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
@@ -47,15 +60,29 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
   if (loading) return <SectionCard title="Máquinas"><p className="text-slate-400">Carregando máquinas...</p></SectionCard>
   if (error) return <SectionCard title="Máquinas"><p className="text-rose-200">{error}</p></SectionCard>
 
+  const serverMachines = machines.filter((machine) => machine.role === 'server')
+  const workMachines = machines.filter((machine) => machine.role !== 'server')
+
   return (
-    <div className="grid gap-5 lg:grid-cols-3">
+    <div className="space-y-5">
+      <div className="grid gap-3 md:grid-cols-2">
+        <SectionCard title="Servidor" subtitle="Onde ficam os serviços permanentes, túneis, APIs e agentes 24/7.">
+          <p className="text-3xl font-semibold tracking-[-0.05em] text-white">{serverMachines.filter((machine) => machine.status === 'online').length}/{serverMachines.length || 1}</p>
+          <p className="mt-1 text-sm text-slate-400">PC servidor online</p>
+        </SectionCard>
+        <SectionCard title="Estações" subtitle="Máquinas de trabalho que enviam heartbeat e métricas para o servidor.">
+          <p className="text-3xl font-semibold tracking-[-0.05em] text-white">{workMachines.filter((machine) => machine.status === 'online').length}/{workMachines.length || 1}</p>
+          <p className="mt-1 text-sm text-slate-400">notebooks/PCs monitorados</p>
+        </SectionCard>
+      </div>
+      <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
       {machines.map((machine) => {
         const disk = mainDisk(machine)
         const isOnline = machine.status === 'online'
         const isEditing = editingId === machine.id
 
         return (
-          <SectionCard key={machine.id} className="min-h-full">
+          <SectionCard key={machine.id} className={`min-h-full ${machine.role === 'server' ? 'lg:col-span-2 xl:col-span-1' : ''}`}>
             <div className="mb-5 flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 {isEditing ? (
@@ -91,7 +118,7 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <h2 className="text-2xl font-black text-white truncate">{machine.name}</h2>
+                    <h2 className="truncate text-2xl font-semibold tracking-[-0.04em] text-white">{machine.name}</h2>
                     <button
                       className="shrink-0 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs font-bold text-slate-400 hover:bg-white/10 hover:text-slate-200 transition"
                       onClick={() => startEdit(machine)}
@@ -102,10 +129,12 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
                     </button>
                   </div>
                 )}
-                <p className="mt-1 text-sm text-slate-400 truncate">{machine.hostname || machine.notes || 'Sem hostname'}</p>
-                {machine.agent && <span className="mt-1 inline-block rounded-md bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">agent remoto</span>}
+                <p className="mt-1 truncate text-sm text-slate-400">{machine.hostname || machine.notes || 'Sem hostname'}</p>
+                <p className="mt-3 text-sm leading-6 text-slate-400">{machineMission(machine)}</p>
+                <span className="mt-3 inline-flex rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300">{machineRoleLabel(machine.role)}</span>
+                {machine.agent && <span className="mt-1 inline-block rounded-md bg-emerald-300/15 px-2 py-0.5 text-xs font-bold text-emerald-200">limits-agent ativo</span>}
                 {machine.agents?.map((agent) => (
-                  <span key={agent.name} title={agent.description || ''} className="mt-1 inline-block rounded-md bg-cyan-300/15 px-2 py-0.5 text-xs font-bold text-cyan-200">
+                  <span key={agent.name} title={agent.description || ''} className="mt-1 inline-block rounded-md bg-indigo-300/15 px-2 py-0.5 text-xs font-semibold text-indigo-200">
                     {agent.name} {agent.description ? `• ${agent.description}` : ''}
                   </span>
                 ))}
@@ -142,6 +171,7 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
           </SectionCard>
         )
       })}
+      </div>
     </div>
   )
 }

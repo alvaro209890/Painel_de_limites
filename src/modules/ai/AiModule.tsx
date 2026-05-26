@@ -42,7 +42,7 @@ export function AiModule({ limits, deepseek, loading, error }: AiModuleProps) {
     <div className="grid gap-5 xl:grid-cols-2">
       <LimitWindow title="Hermes OpenAI Codex" usage={hermesUsage} />
       <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-400 -mt-3 mb-2 xl:col-span-2 text-center">
-        ⚡ Hermes <strong className="text-cyan-200">e</strong> Claw <strong className="text-cyan-200">compartilham</strong> o mesmo credential pool OpenAI Codex
+        ⚡ Hermes usa o <strong className="text-cyan-200">credential pool OpenAI Codex</strong>; Codex CLI standalone fica separado para login, perfis e rotação
       </div>
       <LimitWindow title="Codex CLI (standalone)" usage={codexCliUsage} />
 

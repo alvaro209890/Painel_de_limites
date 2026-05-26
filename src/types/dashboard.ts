@@ -93,6 +93,16 @@ export type CodexProfile = {
   updatedAt: string | null
   lastActivatedAt: string | null
   isActive: boolean
+  usage?: {
+    ok: boolean
+    allowed: boolean | null
+    limitReached: boolean | null
+    reachedType: string | null
+    primary: WindowInfo | null
+    secondary: WindowInfo | null
+    checkedAt: string
+    error?: string
+  } | null
 }
 
 export type CodexProfilesPayload = {
@@ -102,7 +112,7 @@ export type CodexProfilesPayload = {
   checkedAt?: string
 }
 
-export type CodexLoginStatus = {
+export type CliLoginStatus = {
   ok: boolean
   sessionId?: string
   startedAt?: string
@@ -113,8 +123,13 @@ export type CodexLoginStatus = {
   userCode: string | null
   outputTail: string
   authExists: boolean
+  activeEmail?: string | null
+  needsCode?: boolean
   error: string | null
 }
+
+export type CodexLoginStatus = CliLoginStatus
+export type GeminiLoginStatus = CliLoginStatus
 
 export type CodexRotationPayload = {
   ok: boolean

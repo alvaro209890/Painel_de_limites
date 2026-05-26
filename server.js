@@ -5,9 +5,18 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
+import {
+  buildCodexResponsesPayload,
+  buildGeminiPrompt,
+  canonicalModelId,
+  chatCompletionChunk,
+  chatCompletionPayload,
+  isGeminiModel,
+  openAIModelsPayload,
+} from './gateway-utils.mjs'
 
 const app = express()
-app.use(express.json({ limit: '64kb' }))
+app.use(express.json({ limit: '2mb' }))
 const API_PORT = Number(process.env.LIMITS_PANEL_PORT || 8787)
 const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
 const CODEX_DEFAULT_AUTH = path.join(os.homedir(), '.codex', 'auth.json')
@@ -20,6 +29,10 @@ const CODEX_AUTH_PATH = process.env.CODEX_AUTH_PATH || (
     : CODEX_DEFAULT_AUTH
 )
 const CODEX_STATE_PATH = process.env.CODEX_STATE_PATH || path.join(os.homedir(), '.codex', 'state_5.sqlite')
+const GEMINI_DIR = path.join(os.homedir(), '.gemini')
+const GEMINI_OAUTH_PATH = path.join(GEMINI_DIR, 'oauth_creds.json')
+const GEMINI_ACCOUNTS_PATH = path.join(GEMINI_DIR, 'google_accounts.json')
+const GEMINI_SETTINGS_PATH = path.join(GEMINI_DIR, 'settings.json')
 const DIST_DIR = path.join(process.cwd(), 'dist')
 const MACHINES_CONFIG_FILE = path.join(process.cwd(), 'config', 'machines.json')
 const PROJECTS_CONFIG_FILE = path.join(process.cwd(), 'config', 'projects.json')
@@ -32,6 +45,7 @@ const ADMIN_SECRET_FILE = path.join(CODEX_PROFILES_ROOT, 'admin-secret.json')
 const ROTATION_CONFIG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-config.json')
 const ROTATION_LOG_FILE = path.join(CODEX_PROFILES_ROOT, 'rotation-events.jsonl')
 const AGENT_SECRET = process.env.LIMITS_PANEL_AGENT_SECRET || ''
+const GEMINI_AGENT_SECRET = process.env.LIMITS_PANEL_GEMINI_AGENT_SECRET || readPanelSecretFile('gemini-agent-secret.json') || ''
 const AGENTS_DATA_FILE = process.env.LIMITS_PANEL_AGENTS_FILE || path.join(CODEX_PROFILES_ROOT, 'agents-heartbeats.json')
 const AGENT_HEARTBEAT_TTL_MS = (Number(process.env.LIMITS_PANEL_AGENT_TTL_MS) || 120_000)
 const ADMIN_PASSWORD = process.env.LIMITS_PANEL_ADMIN_PASSWORD || readAdminPasswordFromFile()
@@ -273,7 +287,10 @@ function listCodexProfiles() {
     const activeMatchId = extractChatgptAccountId({ tokens: { access_token: activeCredential?.access_token } }) || activeAccountId
     // Match exato pelo slug no label do Hermes (quem foi ativado por ultimo)
     const activeLabelSlug = activeLabel?.replace(/^perfil:/, '') || null
-    const isActive = Boolean(activeLabelSlug && activeLabelSlug === slug)
+    const isActive = Boolean(
+      (activeLabelSlug && activeLabelSlug === slug)
+      || (activeMatchId && profileMatchId && activeMatchId === profileMatchId),
+    )
     return {
       slug,
       name: meta.name || slug,
@@ -290,6 +307,44 @@ function listCodexProfiles() {
   // active mostra a conta do ~/.codex/auth.json atual (o que a CLI está usando agora)
   const active = summarizeCodexAuth()
   return { active, profiles }
+}
+
+function profileUsageSummary(usage) {
+  return {
+    ok: true,
+    allowed: usage.status?.allowed ?? null,
+    limitReached: usage.status?.limitReached ?? null,
+    reachedType: usage.status?.reachedType || null,
+    primary: usage.windows?.primary || null,
+    secondary: usage.windows?.secondary || null,
+    checkedAt: usage.checkedAt,
+  }
+}
+
+async function listCodexProfilesWithUsage() {
+  const state = listCodexProfiles()
+  const profiles = []
+  for (const profile of state.profiles) {
+    try {
+      const usage = await checkProfileUsage(profile)
+      profiles.push({ ...profile, usage: profileUsageSummary(usage) })
+    } catch (error) {
+      profiles.push({
+        ...profile,
+        usage: {
+          ok: false,
+          allowed: null,
+          limitReached: null,
+          reachedType: null,
+          primary: null,
+          secondary: null,
+          checkedAt: new Date().toISOString(),
+          error: error.message,
+        },
+      })
+    }
+  }
+  return { ...state, profiles }
 }
 
 function saveCurrentCodexProfile(name) {
@@ -326,7 +381,15 @@ function backupActiveCodexAuth() {
   return backupPath
 }
 
-function activateCodexProfile(slug) {
+async function validateCodexProfileCredential({ slug, accessToken, accountId }) {
+  await fetchUsageWithToken({
+    accessToken,
+    accountId: accountId || '',
+    label: `perfil:${slug}`,
+  })
+}
+
+async function activateCodexProfile(slug, { validate = true } = {}) {
   ensureProfileDirs()
   const dir = profilePath(slug)
   const sourceAuth = path.join(dir, 'auth.json')
@@ -337,6 +400,7 @@ function activateCodexProfile(slug) {
   const refreshToken = tokens.refresh_token
   const accountId = tokens.account_id
   if (!accessToken) throw new Error(`Perfil "${slug}" nao possui access_token`)
+  if (validate) await validateCodexProfileCredential({ slug, accessToken, accountId })
 
   // Atualiza o credential pool do Hermes (conta que o Codex usa como subagente)
   const credential = updateHermesCodexCredential({
@@ -358,6 +422,27 @@ function activateCodexProfile(slug) {
   atomicWriteJson(metaPath, meta)
 
   return { slug, backupPath, active: summarizeHermesCodexCredential(credential) }
+}
+
+function markHermesCodexCredentialError({ code = 'provider_error', reason = 'provider_error', message = '' } = {}) {
+  const auth = readJson(HERMES_AUTH_PATH)
+  const pool = auth?.credential_pool?.[HERMES_CODEX_PROVIDER_KEY]
+  if (!Array.isArray(pool) || !pool[0]) return null
+  pool[0].last_status = 'error'
+  pool[0].last_status_at = new Date().toISOString()
+  pool[0].last_error_code = code
+  pool[0].last_error_reason = reason
+  pool[0].last_error_message = String(message || '').slice(0, 300)
+  auth.updated_at = new Date().toISOString()
+  atomicWriteJson(HERMES_AUTH_PATH, auth)
+  return pool[0]
+}
+
+function providerErrorReason(error) {
+  if (error?.httpStatus === 401) return 'token_invalidated'
+  if (error?.httpStatus === 429) return 'rate_limited'
+  if (error?.httpStatus === 403) return 'forbidden'
+  return 'provider_error'
 }
 
 function deleteCodexProfile(slug) {
@@ -419,6 +504,11 @@ function startCodexLoginProcess() {
   // Remove CODEX_HOME do ambiente para que o CLI escreva no ~/.codex/ padrao
   const spawnEnv = { ...process.env }
   delete spawnEnv['CODEX_HOME']
+  // Garante que o PATH inclua npm-global e nvm bin (PM2/sshd tem PATH curto)
+  const nvmNodeBin = '/home/server/.nvm/versions/node/v20.20.0/bin'
+  const npmGlobalBin = '/home/server/.npm-global/bin'
+  const extraPath = [npmGlobalBin, nvmNodeBin].filter(p => !spawnEnv.PATH?.includes(p)).join(':')
+  if (extraPath) spawnEnv.PATH = `${extraPath}:${spawnEnv.PATH || '/usr/bin:/bin'}`
   const child = spawn('codex', args, {
     env: spawnEnv,
     cwd: os.homedir(),
@@ -457,6 +547,162 @@ function cancelCodexLoginProcess() {
     codexLoginSession.child = null
   }
   return codexLoginStatusPayload()
+}
+
+function ensureGeminiSettingsForOAuth(baseDir) {
+  const geminiDir = path.join(baseDir, '.gemini')
+  const settingsPath = path.join(geminiDir, 'settings.json')
+  ensureSecureDir(geminiDir)
+  const current = readJson(settingsPath) || {}
+  current.security = current.security || {}
+  current.security.auth = current.security.auth || {}
+  current.security.auth.selectedType = 'oauth-personal'
+  current.security.folderTrust = current.security.folderTrust || { enabled: false }
+  atomicWriteJson(settingsPath, current)
+}
+
+function backupGeminiCliAuth() {
+  ensureSecureDir(CODEX_BACKUPS_DIR)
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const dir = path.join(CODEX_BACKUPS_DIR, 'gemini-cli-auth-${stamp}')
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  for (const file of [GEMINI_OAUTH_PATH, GEMINI_ACCOUNTS_PATH, GEMINI_SETTINGS_PATH]) {
+    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(dir, path.basename(file)))
+  }
+  return dir
+}
+
+function readGeminiAccountEmail() {
+  const accounts = readJson(GEMINI_ACCOUNTS_PATH)
+  return accounts?.active || null
+}
+
+let geminiLoginSession = null
+
+function geminiLoginStatusPayload() {
+  const session = geminiLoginSession
+  const authExists = fs.existsSync(GEMINI_OAUTH_PATH)
+  const activeEmail = readGeminiAccountEmail()
+  if (!session) {
+    return { ok: true, running: false, exitCode: null, loginUrl: null, userCode: null, outputTail: '', authExists, activeEmail: null, needsCode: false, error: null }
+  }
+  const outputTail = sanitizeLoginOutput(session.output).slice(-4000)
+  const rawOutput = session.output.slice(-2000)
+  const url = session.loginUrl || extractLoginUrl(outputTail)
+  return {
+    ok: true,
+    sessionId: session.id,
+    startedAt: session.startedAt,
+    command: session.command,
+    running: Boolean(session.child && session.exitCode === null && !session.error),
+    exitCode: session.exitCode,
+    loginUrl: url,
+    userCode: extractUserCode(outputTail),
+    outputTail,
+    authExists,
+    activeEmail,
+    needsCode: /Enter the authorization code/i.test(rawOutput),
+    error: session.error,
+  }
+}
+
+function startGeminiLoginProcess() {
+  if (geminiLoginSession?.child && geminiLoginSession.exitCode === null && !geminiLoginSession.error) {
+    const err = new Error('Ja existe um login Gemini em andamento')
+    err.statusCode = 409
+    throw err
+  }
+  const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-cli-login-'))
+  ensureGeminiSettingsForOAuth(loginHome)
+  const spawnEnv = { ...process.env, HOME: loginHome, PATH: geminiCliPathEnv(), TERM: process.env.TERM || 'xterm-256color', NO_COLOR: '1' }
+  for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA', 'GOOGLE_CLOUD_PROJECT']) delete spawnEnv[key]
+  // Use bash -c with pre-seeded /auth via printf, pipe for user input
+  const lh = loginHome
+  const bashCmd = "echo '/auth'; HOME=" + lh + " script -q -c \"HOME=" + lh + " gemini --skip-trust\" /dev/null"
+  const child = spawn('bash', ['-c', bashCmd], {
+    env: spawnEnv,
+    cwd: loginHome,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const session = {
+    id: crypto.randomUUID(),
+    startedAt: new Date().toISOString(),
+    command: bashCmd,
+    loginHome,
+    backupPath: null,
+    child,
+    output: '',
+    loginUrl: null,
+    exitCode: null,
+    error: null,
+  }
+  geminiLoginSession = session
+  const append = (chunk) => {
+    const text = chunk.toString()
+    session.output = `${session.output}${text}`.slice(-12000)
+    // Capture OAuth URL from Gemini output
+    if (/Enter the authorization code/i.test(text) && !session.loginUrl) {
+      const urlMatch = text.match(/https?:\/\/accounts\.google\.com[^\s,\)]+/)
+      if (urlMatch) session.loginUrl = urlMatch[0].replace(/[)\]]+$/, '')
+    }
+  }
+  child.stdout.on('data', append)
+  child.stderr.on('data', append)
+  child.on('error', (err) => {
+    session.error = err.message
+    session.child = null
+  })
+  child.on('close', (code) => {
+    session.exitCode = code
+    session.child = null
+    const tmpGeminiDir = path.join(loginHome, '.gemini')
+    const tmpOauth = path.join(tmpGeminiDir, 'oauth_creds.json')
+    try {
+      if (code === 0 && fs.existsSync(tmpOauth)) {
+        session.backupPath = backupGeminiCliAuth()
+        ensureSecureDir(GEMINI_DIR)
+        for (const name of ['oauth_creds.json', 'google_accounts.json', 'settings.json']) {
+          const src = path.join(tmpGeminiDir, name)
+          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(GEMINI_DIR, name))
+        }
+      }
+    } catch (error) {
+      session.error = 'Login Gemini concluido, mas falhou ao salvar credenciais: ' + error.message
+    }
+    try { fs.rmSync(loginHome, { recursive: true, force: true }) } catch {}
+  })
+  return geminiLoginStatusPayload()
+}
+
+function submitGeminiLoginCode(code) {
+  const clean = String(code || '').trim()
+  if (!clean) {
+    const err = new Error('Informe o codigo de autorizacao do Google')
+    err.statusCode = 400
+    throw err
+  }
+  if (!geminiLoginSession?.child || geminiLoginSession.exitCode !== null || geminiLoginSession.error) {
+    const err = new Error('Nao ha login Gemini aguardando codigo')
+    err.statusCode = 409
+    throw err
+  }
+  try {
+    geminiLoginSession.child.stdin.write(`${clean}\n`)
+  } catch (err) {
+    const e = new Error('Falhou ao enviar codigo: ' + err.message)
+    e.statusCode = 500
+    throw e
+  }
+  return geminiLoginStatusPayload()
+}
+
+function cancelGeminiLoginProcess() {
+  if (geminiLoginSession?.child) {
+    geminiLoginSession.child.kill('SIGTERM')
+    geminiLoginSession.error = 'Login Gemini cancelado pelo usuario'
+    geminiLoginSession.child = null
+  }
+  return geminiLoginStatusPayload()
 }
 
 function readJson(filePath) {
@@ -515,7 +761,7 @@ function readProjectsConfig() {
 
 function safeExec(cmd) {
   try {
-    return execSync(cmd, { timeout: 3000, encoding: 'utf8' }).trim()
+    return execSync(cmd, { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   } catch {
     return null
   }
@@ -838,7 +1084,8 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
       return result
     }
 
-    const candidates = orderRotationCandidates(profilesState.profiles, config, null)
+    const activeProfileSlug = profilesState.profiles.find((profile) => profile.isActive)?.slug || null
+    const candidates = orderRotationCandidates(profilesState.profiles, config, activeProfileSlug)
     const checked = []
     for (const candidate of candidates) {
       try {
@@ -861,7 +1108,7 @@ async function runCodexRotationOnce({ force = false, dryRun = false, reason = 'm
             rotationLastRunAt = now
             return result
           }
-          const activation = activateCodexProfile(candidate.slug)
+          const activation = await activateCodexProfile(candidate.slug, { validate: false })
           const event = appendRotationEvent({ ...eventBase, activation: { backupPath: activation.backupPath, active: activation.active } })
           const result = { ok: true, rotated: true, event, checkedAt: new Date().toISOString() }
           rotationLastResult = result
@@ -928,13 +1175,32 @@ const LLM_ROUTING_DEFAULTS = {
   },
 }
 
-function requireAgentSecret(req, res, next) {
-  if (!AGENT_SECRET) {
-    return res.status(503).json({ error: 'LIMITS_PANEL_AGENT_SECRET nao configurado no servidor' })
+function readPanelSecretFile(filename) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(CODEX_PROFILES_ROOT, filename), 'utf8'))
+    return String(parsed.secret || '').trim()
+  } catch {
+    return ''
   }
-  const auth = String(req.headers.authorization || '')
-  const provided = auth.replace(/^Bearer\s+/i, '').trim()
-  if (!safeTimingEqual(provided, AGENT_SECRET)) {
+}
+
+function requestBearer(req) {
+  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+}
+
+function hasMainAgentSecret(req) {
+  return Boolean(AGENT_SECRET && safeTimingEqual(requestBearer(req), AGENT_SECRET))
+}
+
+function hasGeminiAgentSecret(req) {
+  return Boolean(GEMINI_AGENT_SECRET && safeTimingEqual(requestBearer(req), GEMINI_AGENT_SECRET))
+}
+
+function requireAgentSecret(req, res, next) {
+  if (!AGENT_SECRET && !GEMINI_AGENT_SECRET) {
+    return res.status(503).json({ error: 'Nenhum token de agent configurado no servidor' })
+  }
+  if (!hasMainAgentSecret(req) && !hasGeminiAgentSecret(req)) {
     return res.status(401).json({ error: 'Token de agent invalido' })
   }
   return next()
@@ -959,12 +1225,13 @@ async function llmRoutePayload({ task = 'local-automation' } = {}) {
       diagnostics.primaryAvailable = diagnostics.reasons.length === 0
       diagnostics.credentialLabel = credential.label || null
       diagnostics.usage = {
-        allowed: usage.usage?.status?.allowed,
-        limitReached: usage.usage?.status?.limitReached,
-        windows: usage.usage?.windows || {},
+        allowed: usage.status?.allowed,
+        limitReached: usage.status?.limitReached,
+        windows: usage.windows || {},
       }
     }
   } catch (error) {
+    markHermesCodexCredentialError({ code: `HTTP_${error.httpStatus || 'ERR'}`, reason: providerErrorReason(error), message: error.message })
     diagnostics.reasons.push(`erro_openai_codex:${error.message}`)
   }
 
@@ -999,6 +1266,286 @@ async function llmRoutePayload({ task = 'local-automation' } = {}) {
   }
 }
 
+// ─── OpenAI-compatible gateway for OpenCode ──────────────────────
+
+const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
+
+function codexCloudflareHeaders(credential) {
+  const headers = {
+    Authorization: `Bearer ${credential.access_token}`,
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+    'User-Agent': 'codex_cli_rs/0.0.0 (Painel de Limites)',
+    originator: 'codex_cli_rs',
+  }
+  if (credential.account_id) headers['ChatGPT-Account-ID'] = credential.account_id
+  return headers
+}
+
+function writeOpenAISse(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+function writeOpenAISseDone(res) {
+  res.write('data: [DONE]\n\n')
+}
+
+function parseSseFrame(frame) {
+  const event = { type: 'message', data: '' }
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) event.type = line.slice(6).trim()
+    if (line.startsWith('data:')) event.data += `${line.slice(5).trim()}\n`
+  }
+  event.data = event.data.trim()
+  if (!event.data || event.data === '[DONE]') return null
+  try { event.json = JSON.parse(event.data) } catch {}
+  return event
+}
+
+function statusFromUpstreamError(status) {
+  if (status === 401 || status === 403 || status === 429) return status
+  return status >= 400 ? 502 : status
+}
+
+async function ensureCodexCredentialForGateway() {
+  const config = readRotationConfig()
+  let credential = readHermesCodexCredential()
+  if (!credential?.access_token) throw new Error('Nenhuma credencial Hermes OpenAI Codex ativa')
+
+  try {
+    const usage = normalizeUsage(await fetchUsageWithToken({
+      accessToken: credential.access_token,
+      accountId: credential.account_id || '',
+      label: 'Hermes OpenAI Codex',
+    }))
+    if (usageExhaustionReasons(usage, config).length === 0) return credential
+  } catch (error) {
+    markHermesCodexCredentialError({ code: `HTTP_${error.httpStatus || 'ERR'}`, reason: providerErrorReason(error), message: error.message })
+  }
+
+  if (config.enabled) {
+    await runCodexRotationOnce({ reason: 'openai_gateway' })
+    credential = readHermesCodexCredential()
+  }
+  if (!credential?.access_token) throw new Error('Nenhuma credencial Hermes OpenAI Codex ativa apos rotacao')
+  return credential
+}
+
+
+function geminiCliPathEnv() {
+  const candidates = [
+    '/home/server/.nvm/versions/node/v20.20.0/bin',
+    '/home/server/.nvm/versions/node/v22.22.2/bin',
+    path.join(os.homedir(), '.npm-global', 'bin'),
+  ]
+  const current = process.env.PATH || '/usr/bin:/bin'
+  return [...candidates.filter((dir) => fs.existsSync(dir)), current].join(':')
+}
+
+function parseGeminiCliJson(stdout) {
+  const text = String(stdout || '').trim()
+  if (!text) throw new Error('Gemini CLI nao retornou stdout')
+  try { return JSON.parse(text) } catch {}
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1))
+  throw new Error(`Resposta nao-JSON do Gemini CLI: ${text.slice(0, 200)}`)
+}
+
+function runGeminiCli({ model, prompt }) {
+  return new Promise((resolve, reject) => {
+    const timeoutMs = Number(process.env.LIMITS_PANEL_GEMINI_TIMEOUT_MS || 300_000)
+    const child = spawn('gemini', [
+      '-p', prompt,
+      '--model', model,
+      '--output-format', 'json',
+      '--skip-trust',
+    ], {
+      cwd: os.homedir(),
+      env: { ...process.env, PATH: geminiCliPathEnv(), NO_COLOR: '1', TERM: process.env.TERM || 'xterm-256color' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    const cap = Number(process.env.LIMITS_PANEL_GEMINI_OUTPUT_CAP || 2_000_000)
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`Gemini CLI excedeu timeout de ${timeoutMs}ms`))
+    }, timeoutMs)
+    child.stdout.on('data', (chunk) => { if (stdout.length < cap) stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { if (stderr.length < cap) stderr += chunk.toString() })
+    child.on('error', (error) => { clearTimeout(timer); reject(error) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) return reject(new Error(`Gemini CLI saiu com codigo ${code}: ${stderr.slice(0, 500)}`))
+      try {
+        const parsed = parseGeminiCliJson(stdout)
+        resolve(String(parsed.response || '').trim())
+      } catch (error) {
+        reject(error)
+      }
+    })
+  })
+}
+
+async function proxyGeminiCliAsOpenAIChat(req, res) {
+  if (!hasGeminiAgentSecret(req)) {
+    return res.status(403).json({ error: { message: 'Modelo Gemini restrito ao token local do OpenCode deste PC', type: 'forbidden_model' } })
+  }
+  const wantsStream = req.body?.stream !== false
+  const requestId = `chatcmpl-gemini-${crypto.randomBytes(10).toString('hex')}`
+  const model = canonicalModelId(req.body?.model || 'gemini-2.5-flash')
+  const prompt = buildGeminiPrompt(req.body?.messages || []) || 'Responda de forma objetiva.'
+
+  let content
+  try {
+    content = await runGeminiCli({ model, prompt })
+  } catch (error) {
+    return res.status(502).json({ error: { message: `Falha no Gemini CLI: ${error.message}`, type: 'gemini_cli_error' } })
+  }
+
+  if (wantsStream) {
+    res.status(200)
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Connection', 'keep-alive')
+    writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: { role: 'assistant' } }))
+    writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: { content } }))
+    writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: {}, finishReason: 'stop' }))
+    writeOpenAISseDone(res)
+    return res.end()
+  }
+
+  return res.json(chatCompletionPayload({ id: requestId, model, content, finishReason: 'stop' }))
+}
+
+async function proxyCodexAsOpenAIChat(req, res) {
+  const wantsStream = req.body?.stream !== false
+  const requestId = `chatcmpl-limites-${crypto.randomBytes(10).toString('hex')}`
+  const model = String(req.body?.model || 'gpt-5.5').split('/').pop() || 'gpt-5.5'
+  const sessionId = String(req.headers['x-request-id'] || req.headers['x-client-request-id'] || requestId)
+
+  let credential
+  try {
+    credential = await ensureCodexCredentialForGateway()
+  } catch (error) {
+    return res.status(503).json({ error: { message: error.message, type: 'limits_gateway_error' } })
+  }
+
+  const upstreamPayload = buildCodexResponsesPayload(req.body || {}, sessionId)
+  let upstream
+  try {
+    upstream = await fetch(CODEX_RESPONSES_URL, {
+      method: 'POST',
+      headers: codexCloudflareHeaders(credential),
+      body: JSON.stringify(upstreamPayload),
+      signal: AbortSignal.timeout(Number(process.env.LIMITS_PANEL_OPENAI_TIMEOUT_MS || 300_000)),
+    })
+  } catch (error) {
+    return res.status(502).json({ error: { message: `Falha ao chamar Codex upstream: ${error.message}`, type: 'upstream_transport_error' } })
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const text = await upstream.text().catch(() => '')
+    if (upstream.status === 401 || upstream.status === 403) {
+      markHermesCodexCredentialError({ code: `HTTP_${upstream.status}`, reason: 'gateway_upstream_auth_error', message: text.slice(0, 300) })
+    }
+    return res.status(statusFromUpstreamError(upstream.status)).json({
+      error: { message: text.slice(0, 1000) || `Codex upstream HTTP ${upstream.status}`, type: 'upstream_error' },
+    })
+  }
+
+  const reader = upstream.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let content = ''
+  const toolCalls = []
+  let finishReason = 'stop'
+  let started = false
+
+  if (wantsStream) {
+    res.status(200)
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Connection', 'keep-alive')
+    writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: { role: 'assistant' } }))
+  }
+
+  const emitContent = (delta) => {
+    if (!delta) return
+    content += delta
+    if (wantsStream) writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: { content: delta } }))
+  }
+  const emitToolCall = (item) => {
+    const name = item?.name
+    if (!name) return
+    const id = item.call_id || item.id || `call_${toolCalls.length}`
+    const toolCall = { id, type: 'function', function: { name, arguments: item.arguments || '{}' } }
+    toolCalls.push(toolCall)
+    finishReason = 'tool_calls'
+    if (wantsStream) {
+      writeOpenAISse(res, chatCompletionChunk({
+        id: requestId,
+        model,
+        delta: { tool_calls: [{ index: toolCalls.length - 1, ...toolCall }] },
+      }))
+    }
+  }
+
+  const handleEvent = (event) => {
+    const data = event?.json
+    if (!data) return
+    if (data.type === 'response.output_text.delta') emitContent(data.delta || '')
+    if (data.type === 'response.output_item.done' && data.item?.type === 'function_call') emitToolCall(data.item)
+    if (data.type === 'response.failed') throw new Error(data.response?.error?.message || 'Codex upstream falhou')
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() || ''
+      for (const frame of frames) {
+        const event = parseSseFrame(frame)
+        if (event) {
+          started = true
+          handleEvent(event)
+        }
+      }
+    }
+    if (buffer.trim()) {
+      const event = parseSseFrame(buffer)
+      if (event) handleEvent(event)
+    }
+  } catch (error) {
+    if (wantsStream) {
+      writeOpenAISse(res, { error: { message: error.message, type: 'upstream_stream_error' } })
+      writeOpenAISseDone(res)
+      return res.end()
+    }
+    return res.status(started ? 502 : 500).json({ error: { message: error.message, type: 'upstream_stream_error' } })
+  }
+
+  if (wantsStream) {
+    writeOpenAISse(res, chatCompletionChunk({ id: requestId, model, delta: {}, finishReason }))
+    writeOpenAISseDone(res)
+    return res.end()
+  }
+
+  return res.json(chatCompletionPayload({ id: requestId, model, content, toolCalls, finishReason }))
+}
+
+app.get('/v1/models', requireAgentSecret, (req, res) => {
+  res.json(openAIModelsPayload({ includeGemini: hasGeminiAgentSecret(req) }))
+})
+
+app.post('/v1/chat/completions', requireAgentSecret, async (req, res) => {
+  if (isGeminiModel(req.body?.model)) return proxyGeminiCliAsOpenAIChat(req, res)
+  return proxyCodexAsOpenAIChat(req, res)
+})
+
 // ─── Codex API ────────────────────────────────────────────────────
 
 async function fetchUsageWithToken({ accessToken, accountId = '', label = 'Codex' }) {
@@ -1020,7 +1567,10 @@ async function fetchUsageWithToken({ accessToken, accountId = '', label = 'Codex
 
   const text = await response.text()
   if (!response.ok) {
-    throw new Error(`Falha ao consultar uso do ${label}: HTTP ${response.status} ${text.slice(0, 160)}`)
+    const error = new Error(`Falha ao consultar uso do ${label}: HTTP ${response.status} ${text.slice(0, 160)}`)
+    error.httpStatus = response.status
+    error.responseBody = text.slice(0, 300)
+    throw error
   }
 
   return JSON.parse(text)
@@ -1107,6 +1657,7 @@ function summarizeHermesCodexCredential(credential) {
 }
 
 async function readHermesCodexSnapshot() {
+  let credential = null
   const source = {
     label: 'Hermes OpenAI Codex',
     authPath: HERMES_AUTH_PATH,
@@ -1114,7 +1665,7 @@ async function readHermesCodexSnapshot() {
     endpoint: 'https://chatgpt.com/backend-api/codex',
   }
   try {
-    const credential = readHermesCodexCredential()
+    credential = readHermesCodexCredential()
     if (!credential) {
       return { ok: false, ...source, credentialLabel: null, error: 'Credencial openai-codex nao encontrada em ~/.hermes/auth.json' }
     }
@@ -1130,17 +1681,27 @@ async function readHermesCodexSnapshot() {
       usage: normalizeUsage(raw),
     }
   } catch (error) {
-    return { ok: false, ...source, credentialLabel: null, error: error.message, checkedAt: new Date().toISOString() }
+    if (credential) markHermesCodexCredentialError({ code: `HTTP_${error.httpStatus || 'ERR'}`, reason: providerErrorReason(error), message: error.message })
+    return { ok: false, ...source, credentialLabel: credential?.label || null, error: error.message, checkedAt: new Date().toISOString() }
   }
 }
 
+const unavailableSqliteDatabases = new Set()
+
 function querySqlite(dbPath, sql) {
   if (!fs.existsSync(dbPath)) return []
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true })
+  if (unavailableSqliteDatabases.has(dbPath)) return []
   try {
-    return db.prepare(sql).all()
-  } finally {
-    db.close()
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true })
+    try {
+      return db.prepare(sql).all()
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    unavailableSqliteDatabases.add(dbPath)
+    console.warn(`[Painel] SQLite local indisponivel (${path.basename(dbPath)}): ${error.message}`)
+    return []
   }
 }
 
@@ -1187,6 +1748,25 @@ function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
   const primary = usage.rate_limit?.primary_window || null
   const secondary = usage.rate_limit?.secondary_window || null
   const now = Math.floor(Date.now() / 1000)
+  const normalizeWindow = (window, label) => {
+    if (!window) return null
+    const usedPercent = Number(window.used_percent ?? window.usedPercent)
+    const windowSeconds = Number(window.limit_window_seconds ?? window.windowSeconds)
+    const resetAfterSeconds = Number(window.reset_after_seconds ?? window.resetAfterSeconds)
+    const resetAtSeconds = Number(window.reset_at ?? (window.resetAt ? Date.parse(window.resetAt) / 1000 : 0))
+    if (!Number.isFinite(usedPercent)) return null
+    return {
+      label,
+      usedPercent,
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      windowSeconds: Number.isFinite(windowSeconds) ? windowSeconds : 0,
+      resetAfterSeconds: Number.isFinite(resetAfterSeconds) ? resetAfterSeconds : 0,
+      resetAt: Number.isFinite(resetAtSeconds) && resetAtSeconds > 0 ? new Date(resetAtSeconds * 1000).toISOString() : null,
+      elapsedSeconds: Number.isFinite(windowSeconds) && Number.isFinite(resetAfterSeconds)
+        ? Math.max(0, windowSeconds - resetAfterSeconds)
+        : 0,
+    }
+  }
 
   return {
     checkedAt: new Date().toISOString(),
@@ -1201,24 +1781,8 @@ function normalizeUsage(usage, authPath = CODEX_AUTH_PATH) {
       reachedType: formatReachedType(usage.rate_limit_reached_type),
     },
     windows: {
-      primary: primary && {
-        label: 'Janela principal de 5 horas',
-        usedPercent: primary.used_percent,
-        remainingPercent: Math.max(0, 100 - primary.used_percent),
-        windowSeconds: primary.limit_window_seconds,
-        resetAfterSeconds: primary.reset_after_seconds,
-        resetAt: new Date(primary.reset_at * 1000).toISOString(),
-        elapsedSeconds: Math.max(0, primary.limit_window_seconds - primary.reset_after_seconds),
-      },
-      secondary: secondary && {
-        label: 'Janela secundaria',
-        usedPercent: secondary.used_percent,
-        remainingPercent: Math.max(0, 100 - secondary.used_percent),
-        windowSeconds: secondary.limit_window_seconds,
-        resetAfterSeconds: secondary.reset_after_seconds,
-        resetAt: new Date(secondary.reset_at * 1000).toISOString(),
-        elapsedSeconds: Math.max(0, secondary.limit_window_seconds - secondary.reset_after_seconds),
-      },
+      primary: normalizeWindow(primary, 'Janela principal de 5 horas'),
+      secondary: normalizeWindow(secondary, 'Janela semanal'),
     },
     credits: usage.credits || null,
     rawAgeSeconds: primary?.reset_at ? Math.max(0, primary.reset_at - now) : null,
@@ -1287,9 +1851,17 @@ function collectMachines() {
 }
 
 function readPm2Processes() {
-  const raw = safeExec('pm2 jlist')
-  if (!raw) return []
-  try { return JSON.parse(raw) } catch { return [] }
+  const candidates = [
+    'pm2 jlist',
+    '/home/server/.nvm/versions/node/v20.20.0/bin/node /home/server/.nvm/versions/node/v20.20.0/lib/node_modules/pm2/bin/pm2 jlist',
+    '/home/server/.npm-global/bin/pm2 jlist',
+  ]
+  for (const command of candidates) {
+    const raw = safeExec(command)
+    if (!raw) continue
+    try { return JSON.parse(raw) } catch {}
+  }
+  return []
 }
 
 async function collectProjects() {
@@ -1420,28 +1992,39 @@ function deriveAlerts({ machines, limitsPayload, deepseekPayload, projects }) {
 
 async function buildLimitsPayload() {
   const hermesCredential = readHermesCodexCredential()
-  const hermesUsage = hermesCredential?.access_token
-    ? normalizeUsage(await fetchUsageWithToken({
+  let hermesUsage = null
+  let hermesError = null
+  if (hermesCredential?.access_token) {
+    try {
+      hermesUsage = normalizeUsage(await fetchUsageWithToken({
         accessToken: hermesCredential.access_token,
         accountId: hermesCredential.account_id || '',
         label: 'Hermes OpenAI Codex',
       }))
-    : null
+    } catch (error) {
+      hermesError = error.message
+      markHermesCodexCredentialError({ code: `HTTP_${error.httpStatus || 'ERR'}`, reason: providerErrorReason(error), message: error.message })
+    }
+  }
 
   // Tenta pegar o usage do Codex CLI standalone também para comparação, mas não falha se não existir
   let codexCliUsage = null
+  let codexCliError = null
   try {
     codexCliUsage = normalizeUsage(await fetchCodexUsage(), CODEX_AUTH_PATH)
-  } catch {}
+  } catch (error) {
+    codexCliError = error.message
+  }
 
   return {
     usage: hermesUsage || codexCliUsage,
     hermesCodex: hermesCredential ? {
-      ok: true,
+      ok: Boolean(hermesUsage),
       usage: hermesUsage,
       credentialLabel: hermesCredential.label || null,
+      ...(hermesError ? { error: hermesError } : {}),
     } : { ok: false, error: 'Sem credencial Hermes OpenAI Codex' },
-    codexCli: codexCliUsage ? { ok: true, usage: codexCliUsage } : { ok: false, error: 'Codex CLI nao esta logado' },
+    codexCli: codexCliUsage ? { ok: true, usage: codexCliUsage } : { ok: false, error: codexCliError || 'Codex CLI nao esta logado' },
     local: readLocalMetrics(),
   }
 }
@@ -1592,38 +2175,38 @@ app.post('/api/codex-profiles/logout', requireAdmin, requireAdminAction, (req, r
   res.json({ ok: true, authenticated: false })
 })
 
-app.get('/api/codex-profiles', requireAdmin, (_req, res) => {
+app.get('/api/codex-profiles', requireAdmin, async (_req, res) => {
   try {
-    res.json({ ok: true, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
+    res.json({ ok: true, ...await listCodexProfilesWithUsage(), checkedAt: new Date().toISOString() })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
 })
 
-app.post('/api/codex-profiles/save-current', requireAdmin, requireAdminAction, (req, res) => {
+app.post('/api/codex-profiles/save-current', requireAdmin, requireAdminAction, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim()
     if (!name) return res.status(400).json({ error: 'Nome do perfil obrigatorio' })
     const profile = saveCurrentCodexProfile(name)
-    res.json({ ok: true, profile, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
+    res.json({ ok: true, profile, ...await listCodexProfilesWithUsage(), checkedAt: new Date().toISOString() })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
 })
 
-app.post('/api/codex-profiles/:slug/activate', requireAdmin, requireAdminAction, (req, res) => {
+app.post('/api/codex-profiles/:slug/activate', requireAdmin, requireAdminAction, async (req, res) => {
   try {
-    const result = activateCodexProfile(req.params.slug)
-    res.json({ ok: true, result, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
+    const result = await activateCodexProfile(req.params.slug)
+    res.json({ ok: true, result, ...await listCodexProfilesWithUsage(), checkedAt: new Date().toISOString() })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
 })
 
-app.delete('/api/codex-profiles/:slug', requireAdmin, requireAdminAction, (req, res) => {
+app.delete('/api/codex-profiles/:slug', requireAdmin, requireAdminAction, async (req, res) => {
   try {
     const result = deleteCodexProfile(req.params.slug)
-    res.json({ ok: true, result, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
+    res.json({ ok: true, result, ...await listCodexProfilesWithUsage(), checkedAt: new Date().toISOString() })
   } catch (error) {
     res.status(500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
@@ -1645,7 +2228,31 @@ app.post('/api/codex-login/cancel', requireAdmin, requireAdminAction, (_req, res
   res.json(cancelCodexLoginProcess())
 })
 
-app.post('/api/codex-login/auto-save', requireAdmin, requireAdminAction, (_req, res) => {
+app.get('/api/gemini-login/status', requireAdmin, (_req, res) => {
+  res.json(geminiLoginStatusPayload())
+})
+
+app.post('/api/gemini-login/start', requireAdmin, requireAdminAction, (_req, res) => {
+  try {
+    res.json(startGeminiLoginProcess())
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.post('/api/gemini-login/submit-code', requireAdmin, requireAdminAction, (req, res) => {
+  try {
+    res.json(submitGeminiLoginCode(req.body?.code))
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.post('/api/gemini-login/cancel', requireAdmin, requireAdminAction, (_req, res) => {
+  res.json(cancelGeminiLoginProcess())
+})
+
+app.post('/api/codex-login/auto-save', requireAdmin, requireAdminAction, async (_req, res) => {
   try {
     const auth = readJson(CODEX_AUTH_PATH)
     if (!auth) return res.status(400).json({ error: 'Nenhuma conta ativa no CLI' })
@@ -1685,7 +2292,7 @@ app.post('/api/codex-login/auto-save', requireAdmin, requireAdminAction, (_req, 
     }
 
     // Ativa o perfil
-    const activation = activateCodexProfile(slug)
+    const activation = await activateCodexProfile(slug)
 
     res.json({ ok: true, slug, activation, ...listCodexProfiles(), checkedAt: new Date().toISOString() })
   } catch (error) {
@@ -1865,13 +2472,16 @@ function startStaticServer() {
   }
 
   const staticApp = express()
-  staticApp.use('/api', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+  const proxyToApi = (req, res) => {
     const target = `http://127.0.0.1:${API_PORT}${req.originalUrl}`
     const headers = {
       accept: req.headers.accept || 'application/json',
+      authorization: req.headers.authorization || '',
       cookie: req.headers.cookie || '',
       'content-type': req.headers['content-type'] || 'application/json',
       'x-admin-action': req.headers['x-admin-action'] || '',
+      'x-client-request-id': req.headers['x-client-request-id'] || '',
+      'x-request-id': req.headers['x-request-id'] || '',
       origin: req.headers.origin || '',
       host: req.headers.host || '',
       'x-forwarded-host': req.headers.host || '',
@@ -1888,12 +2498,19 @@ function startStaticServer() {
         if (setCookie) res.setHeader('Set-Cookie', setCookie)
         const contentType = apiRes.headers.get('content-type') || 'application/json'
         res.setHeader('content-type', contentType)
+        if (contentType.includes('text/event-stream')) {
+          res.setHeader('Cache-Control', apiRes.headers.get('cache-control') || 'no-cache')
+          for await (const chunk of apiRes.body) res.write(chunk)
+          return res.end()
+        }
         res.send(await apiRes.text())
       })
       .catch((err) => {
         res.status(502).json({ error: `Falha no proxy da API: ${err.message}`, checkedAt: new Date().toISOString() })
       })
-  })
+  }
+
+  staticApp.use(['/api', '/v1'], express.raw({ type: '*/*', limit: '2mb' }), proxyToApi)
 
   staticApp.use(express.static(DIST_DIR, {
     index: 'index.html',

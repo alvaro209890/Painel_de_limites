@@ -1,13 +1,15 @@
 import { SectionCard } from '../../components/SectionCard'
 import { StatusBadge } from '../../components/StatusBadge'
-import type { CodexAdminStatus, CodexLoginStatus, CodexProfilesPayload, CodexRotationPayload, HermesCodexPayload } from '../../types/dashboard'
-import { formatDate } from '../../utils/format'
+import type { CodexAdminStatus, CodexLoginStatus, GeminiLoginStatus, CodexProfilesPayload, CodexRotationPayload, HermesCodexPayload } from '../../types/dashboard'
+import { formatDate, formatDuration, formatPercent } from '../../utils/format'
 
 type CodexAccountsModuleProps = {
   admin: CodexAdminStatus | null
   profilesData: CodexProfilesPayload | null
   hermesCodex: HermesCodexPayload | null
   loginStatus: CodexLoginStatus | null
+  geminiLoginStatus: GeminiLoginStatus | null
+  geminiAuthCode: string
   rotationStatus: CodexRotationPayload | null
   error: string | null
   rotationError: string | null
@@ -19,6 +21,10 @@ type CodexAccountsModuleProps = {
   onDelete: (slug: string) => void
   onStartLogin: () => void
   onCancelLogin: () => void
+  onStartGeminiLogin: () => void
+  onCancelGeminiLogin: () => void
+  onGeminiAuthCodeChange: (value: string) => void
+  onSubmitGeminiCode: () => void
   onUpdateRotation: (config: Partial<CodexRotationPayload['config']>) => void
   onRunRotation: (dryRun: boolean) => void
   onRefresh: () => void
@@ -33,11 +39,20 @@ function safeJson(value: unknown) {
   try { return JSON.stringify(value, null, 2) } catch { return String(value) }
 }
 
+function limitTone(value?: number | null) {
+  if (value === null || value === undefined) return 'text-slate-300'
+  if (value <= 10) return 'text-rose-200'
+  if (value <= 25) return 'text-amber-200'
+  return 'text-emerald-200'
+}
+
 export function CodexAccountsModule({
   admin,
   profilesData,
   hermesCodex,
   loginStatus,
+  geminiLoginStatus,
+  geminiAuthCode,
   rotationStatus,
   error,
   rotationError,
@@ -49,6 +64,10 @@ export function CodexAccountsModule({
   onDelete,
   onStartLogin,
   onCancelLogin,
+  onStartGeminiLogin,
+  onCancelGeminiLogin,
+  onGeminiAuthCodeChange,
+  onSubmitGeminiCode,
   onUpdateRotation,
   onRunRotation,
   onRefresh,
@@ -62,7 +81,7 @@ export function CodexAccountsModule({
     <div className="space-y-5">
       <SectionCard
         title="Contas Codex / Hermes"
-        subtitle="A conta do Hermes e do Claw (agente secundário) é a mesma — ambos compartilham o credential pool. A conta do Codex CLI fica separada e continua servindo para perfis, login e rotação."
+        subtitle="A conta usada pelo Hermes fica no credential pool OpenAI Codex. A conta do Codex CLI fica separada e continua servindo para perfis, login e rotação."
         action={(
           <button className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-2 text-sm font-black text-cyan-100 hover:bg-cyan-300/15" onClick={onRefresh} type="button" disabled={busy}>
             Atualizar contas
@@ -135,6 +154,54 @@ export function CodexAccountsModule({
               <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-slate-950/70 p-3 text-xs text-slate-300">{loginStatus.error || loginStatus.outputTail}</pre>
             )}
           </div>
+
+          <div className="rounded-2xl border border-violet-300/20 bg-violet-400/10 p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-violet-200/70">Gemini CLI</p>
+                <h3 className="mt-1 text-lg font-black text-white">Login Gemini pelo navegador</h3>
+                <p className="mt-1 text-sm text-violet-100/75">Abre o OAuth do Google em nova aba e salva em ~/.gemini/oauth_creds.json para o provider limites-gemini do OpenCode deste PC.</p>
+              </div>
+              <StatusBadge status={geminiLoginStatus?.authExists ? 'online' : 'offline'} label={geminiLoginStatus?.authExists ? 'Gemini logado' : 'Sem OAuth'} />
+            </div>
+            <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Rodando</p><p className="font-bold text-slate-100">{boolLabel(Boolean(geminiLoginStatus?.running))}</p></div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Exit code</p><p className="font-bold text-slate-100">{geminiLoginStatus?.exitCode ?? '-'}</p></div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">E-mail ativo</p><p className="font-bold text-violet-100">{geminiLoginStatus?.activeEmail || '-'}</p></div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Auth detectado</p><p className="font-bold text-slate-100">{boolLabel(Boolean(geminiLoginStatus?.authExists))}</p></div>
+            </div>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <button className="rounded-xl bg-violet-300 px-4 py-2 text-sm font-black text-slate-950 hover:bg-violet-200 disabled:opacity-50" onClick={onStartGeminiLogin} type="button" disabled={busy || geminiLoginStatus?.running}>
+                Login Gemini CLI
+              </button>
+              {geminiLoginStatus?.running && (
+                <button className="rounded-xl border border-rose-300/20 bg-rose-400/10 px-4 py-2 text-sm font-black text-rose-100 hover:bg-rose-400/15 disabled:opacity-50" onClick={onCancelGeminiLogin} type="button" disabled={busy}>
+                  Cancelar Gemini
+                </button>
+              )}
+            </div>
+            {geminiLoginStatus?.loginUrl && (
+              <a className="mt-3 block truncate rounded-xl border border-violet-300/20 bg-violet-300/10 px-3 py-2 text-sm font-bold text-violet-100 hover:bg-violet-300/15" href={geminiLoginStatus.loginUrl} target="_blank" rel="noreferrer">
+                Abrir URL de login Gemini: {geminiLoginStatus.loginUrl}
+              </a>
+            )}
+            {(geminiLoginStatus?.running || geminiLoginStatus?.needsCode) && (
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input
+                  className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-white outline-none ring-violet-300/30 transition focus:ring-4"
+                  value={geminiAuthCode}
+                  onChange={(event) => onGeminiAuthCodeChange(event.target.value)}
+                  placeholder="Cole aqui o código de autorização do Google"
+                />
+                <button className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-black text-slate-950 hover:bg-emerald-200 disabled:opacity-50" onClick={onSubmitGeminiCode} type="button" disabled={busy || !geminiAuthCode.trim()}>
+                  Enviar código
+                </button>
+              </div>
+            )}
+            {(geminiLoginStatus?.outputTail || geminiLoginStatus?.error) && (
+              <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-slate-950/70 p-3 text-xs text-slate-300">{geminiLoginStatus.error || geminiLoginStatus.outputTail}</pre>
+            )}
+          </div>
         </div>
       </SectionCard>
 
@@ -164,6 +231,32 @@ export function CodexAccountsModule({
               </div>
               <p className="text-xs text-slate-500">Slug: {profile.slug}</p>
               <p className="text-xs text-slate-500">Atualizado: {formatDate(profile.updatedAt)}</p>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Disponível agora</p>
+                  <p className={`mt-1 text-2xl font-black ${limitTone(profile.usage?.primary?.remainingPercent)}`}>
+                    {profile.usage?.ok ? formatPercent(profile.usage.primary?.remainingPercent) : '--'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {profile.usage?.primary ? `Usado: ${formatPercent(profile.usage.primary.usedPercent)}` : 'Sem leitura da janela principal'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Janela semanal</p>
+                  <p className={`mt-1 text-2xl font-black ${limitTone(profile.usage?.secondary?.remainingPercent)}`}>
+                    {profile.usage?.ok ? formatPercent(profile.usage.secondary?.remainingPercent) : '--'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {profile.usage?.secondary ? `Usado: ${formatPercent(profile.usage.secondary.usedPercent)}` : 'Sem leitura semanal'}
+                  </p>
+                </div>
+              </div>
+              {profile.usage?.primary && (
+                <p className="mt-2 text-xs text-slate-500">Reseta em {formatDuration(profile.usage.primary.resetAfterSeconds)} • {profile.usage.allowed ? 'uso permitido' : 'uso bloqueado'}</p>
+              )}
+              {profile.usage?.error && (
+                <p className="mt-3 rounded-xl border border-amber-300/20 bg-amber-400/10 p-3 text-xs text-amber-100">{profile.usage.error}</p>
+              )}
               <div className="mt-4 flex flex-wrap gap-2">
                 <button className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-300/15 disabled:opacity-50" onClick={() => onActivate(profile.slug)} type="button" disabled={busy || profile.isActive}>
                   Ativar
