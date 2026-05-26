@@ -2248,6 +2248,18 @@ async function proxyOpenCodeZenRelay(req, res) {
       return res.json({ error: { message: 'Rate limit OpenCode Zen', type: 'rate_limit_error', code: 429 } })
     }
 
+    if (upstream.status === 403) {
+      // Cloudflare IP block — treat as rate limit so Hermes uses fallback chain
+      trackOpenCodeZenRateLimit()
+      if (!res.headersSent) res.status(429)
+      if (isStream) {
+        res.write('data: ' + JSON.stringify({ error: { message: 'OpenCode Zen bloqueado (IP block Cloudflare)', type: 'rate_limit_error', code: 429 } }) + '\n\n')
+        res.write('data: [DONE]\n\n')
+        return res.end()
+      }
+      return res.json({ error: { message: 'OpenCode Zen bloqueado (IP block Cloudflare)', type: 'rate_limit_error', code: 429 } })
+    }
+
     if (!upstream.ok) {
       const errText = await upstream.text()
       if (!res.headersSent) res.status(upstream.status)
