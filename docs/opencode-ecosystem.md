@@ -9,6 +9,113 @@ Este documento consolida **tudo** relacionado ao OpenCode no Painel de Limites: 
 ## Sumário
 
 1. [Arquitetura Geral](#1-arquitetura-geral)
+
+## 1-A. Fluxo de Requisicoes e IP de Saida
+
+### Quem faz a requisicao upstream para a OpenCode?
+
+**Sempre o servidor (45.236.212.84).** O Painel de Limites roda exclusivamente no servidor. 
+Quando qualquer cliente (Hermes do notebook, Hermes do servidor, OpenCode CLI, curl) faz uma 
+requisicao para o relay Zen (`/v1/zen/chat/completions`), o servidor faz o proxy chamando:
+
+```js
+fetch('https://opencode.ai/zen/v1/chat/completions', ...)
+```
+
+A OpenCode enxerga **apenas o IP do servidor** como origem da requisicao.
+
+### Diagrama de fluxo real
+
+```
++---------------------------+     +---------------------------------------+     +------------------+
+|  Hermes Acer (notebook)   |---->|                                       |---->|  OpenCode Zen    |
+|  IP publico: 177.23.254.196|     |  Painel de Limites (servidor)        |     |  opencode.ai     |
++---------------------------+     |  IP de saida: 45.236.212.84          |     |  ve IP:          |
+                                   |  proxyOpenCodeZenRelay               |     |  45.236.212.84   |
++---------------------------+     |  -> fetch(targetUrl)                  |     |  (servidor)      |
+|  Hermes Servidor (local)  |---->|                                       |     +------------------+
+|  IP: 127.0.0.1            |     +---------------------------------------+
++---------------------------+
+```
+
+**Resumo: ambos os PCs compartilham o mesmo IP de saida (45.236.212.84) e, portanto, 
+o mesmo rate-limit/limite na OpenCode.**
+
+### Como as requisicoes sao contabilizadas no painel
+
+Apenas a **rota Zen** (`/v1/zen/chat/completions`) alimenta o `sourceStats` 
+('Requisicoes por maquina'). A rota Codex (`/v1/chat/completions`) **nao contabiliza**.
+
+#### Rastreamento por IP de origem
+
+```javascript
+// server.js:2191
+const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim()
+```
+
+| Origem da requisicao | IP que chega no servidor | Nome no ZEN_MACHINE_MAP | Aparece no painel como |
+|---|---|---|---|
+| Hermes Acer (via Cloudflare) -> `limites.cursar.space` | Cloudflare tunnel -> `127.0.0.1` | `'servidor (local)'` | servidor (local) |
+| Hermes Acer (via Tailscale direto) -> `100.65.138.58:8787` | `100.102.202.63` (Tailscale) | `'Acer'` | **Acer** |
+| Hermes Servidor (localhost) -> `127.0.0.1:8787` | `127.0.0.1` | `'servidor (local)'` | servidor (local) |
+| Hermes Servidor (Tailscale) -> `100.65.138.58:8787` | `100.65.138.58` | `'servidor'` | servidor |
+
+#### Mapa de IPs
+
+```javascript
+// server.js:978
+const ZEN_MACHINE_MAP = {
+  '100.102.202.63': 'Acer',
+  '100.65.138.58':  'servidor',
+  '127.0.0.1':      'servidor (local)',
+  '::1':            'servidor (local)',
+}
+```
+
+### Configuracao dos dois Hermes
+
+#### Servidor (server-desktop)
+
+```yaml
+model:
+  default: deepseek-v4-flash-free
+  provider: opencode-zen-free
+  base_url: http://127.0.0.1:8787/v1/zen
+```
+
+#### Acer (notebook)
+
+```yaml
+# Provider principal (Codex/GPT)
+model:
+  default: gpt-5.5
+  provider: openai-codex
+  base_url: https://limites.cursar.space/v1
+
+# Provider adicional (OpenCode Zen) - via Cloudflare
+providers:
+  opencode-zen-free:
+    name: OpenCode Zen Free
+    base_url: https://limites.cursar.space/v1/zen
+    api_mode: openai
+    model: deepseek-v4-flash-free
+    models:
+      deepseek-v4-flash-free: { context_length: 128000 }
+      nemotron-3-super-free:  { context_length: 128000 }
+      big-pickle:             { context_length: 128000 }
+
+# Fallback automatico
+fallback_providers:
+- opencode-zen-free
+```
+
+**Nota:** quando o notebook usa os modelos Zen via Cloudflare, as requisicoes
+aparecem como 'servidor (local)' no sourceStats. Para aparecer como 'Acer',
+e necessario acessar o servidor via Tailscale direto (`http://100.65.138.58:8787/v1/zen`)
+e o servidor Node precisa ouvir em `0.0.0.0:8787`.
+
+---
+
 2. [OpenCode Zen Relay](#2-opencode-zen-relay)
 3. [Gateway OpenAI-compatible (Codex/GPT)](#3-gateway-openai-compatible-codexgpt)
 4. [Hermes + OpenCode Zen Free](#4-hermes--opencode-zen-free)
