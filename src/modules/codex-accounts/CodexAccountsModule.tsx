@@ -326,8 +326,11 @@ export function CodexAccountsModule({
               <h3 className="mt-1 text-lg font-black text-white">Relay gratuito</h3>
               <p className="mt-1 text-sm text-amber-100/70">Servidor → deepseek-v4-flash-free, nemotron, big-pickle</p>
             </div>
-            <StatusBadge status={openCodeZen?.totalRequests ? 'online' : 'warning'} label={openCodeZen?.totalRequests ? 'Ativo' : 'Inativo'} />
+            <StatusBadge status={openCodeZen?.upstreamOk ? 'online' : 'warning'} label={openCodeZen?.upstreamOk ? 'Online' : (openCodeZen?.upstreamError ? 'Offline' : 'Verificando...')} />
           </div>
+          {openCodeZen?.upstreamError && (
+            <p className="mb-3 rounded-xl border border-rose-300/20 bg-rose-400/10 p-3 text-xs text-rose-100">Upstream: {openCodeZen.upstreamError}</p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <MetricCard label="Req/min" value={String(openCodeZen?.requestsPerMinute ?? 0)} tone="cyan" />
             <MetricCard label="Total de requests" value={formatNumber(openCodeZen?.totalRequests)} tone="default" />
