@@ -1601,6 +1601,7 @@ app.get('/v1/models', requireAgentSecret, (req, res) => {
 })
 
 app.post('/v1/chat/completions', requireAgentSecret, async (req, res) => {
+  trackOpenCodeZenRequest(req)
   if (isGeminiModel(req.body?.model)) return proxyGeminiCliAsOpenAIChat(req, res)
   return proxyCodexAsOpenAIChat(req, res)
 })
