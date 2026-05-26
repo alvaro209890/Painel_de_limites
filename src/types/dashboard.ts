@@ -92,6 +92,13 @@ export type OpenCodeZenStatus = {
   sourceStats: Record<string, ZenSourceStat>
   upstreamOk: boolean
   upstreamError: string | null
+  // Fallback fields
+  fallbackActive: boolean
+  fallbackIp: string | null
+  fallbackAt: string | null
+  fallbackAttempts: number
+  fallbackRecoveries: number
+  acerProxyOnline: boolean
 }
 
 export type CodexAdminStatus = {
@@ -190,14 +197,6 @@ export type DashboardMachine = {
   agents?: AgentInfo[] | null
 }
 
-export type OpenCodeZenStatus = {
-  totalRequests: number
-  requestsPerMinute: number
-  errors429: number
-  lastRateLimitAt: string | null
-  lastRequestAt: string | null
-  sourceStats?: Record<string, number>
-}
 
 export type ProjectService = {
   id: string

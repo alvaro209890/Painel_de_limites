@@ -982,6 +982,10 @@ const ZEN_MACHINE_MAP = {
   '::1': 'servidor (local)',
 }
 
+const ACER_PROXY_URL = process.env.ACER_PROXY_URL || 'http://100.102.202.63:8788'
+const FALLBACK_COOLDOWN_MS = parseInt(process.env.FALLBACK_COOLDOWN_MS || '300000', 10) // 5 min
+const ACER_PROBE_INTERVAL_MS = 30000 // 30s
+
 let openCodeZenState = {
   totalRequests: 0,
   errors429: 0,
@@ -989,6 +993,15 @@ let openCodeZenState = {
   lastRequestAt: null,
   requestsWindow: [],
   sourceStats: {}, // { ip: { count, lastAt, machineName } }
+
+  // Fallback state
+  fallbackActive: false,       // true = usando proxy do Acer
+  fallbackIp: null,            // IP de saida atual (servidor ou Acer)
+  fallbackAt: null,            // quando o fallback foi ativado
+  fallbackAttempts: 0,         // quantas vezes ativou fallback
+  fallbackRecoveries: 0,       // quantas vezes voltou ao normal
+  acerProxyOnline: false,      // se o proxy do Acer esta respondendo
+  _lastAcerProbeAt: 0,
 }
 
 function readRotationConfig() {
@@ -2204,6 +2217,20 @@ function trackOpenCodeZenRateLimit() {
   openCodeZenState.lastRateLimitAt = new Date().toISOString()
 }
 
+async function probeAcerProxy() {
+  const now = Date.now()
+  if (!openCodeZenState._lastAcerProbeAt || now - openCodeZenState._lastAcerProbeAt > ACER_PROBE_INTERVAL_MS) {
+    openCodeZenState._lastAcerProbeAt = now
+    try {
+      const resp = await fetch(ACER_PROXY_URL + '/health', { signal: AbortSignal.timeout(5_000) })
+      openCodeZenState.acerProxyOnline = resp.ok
+    } catch {
+      openCodeZenState.acerProxyOnline = false
+    }
+  }
+  return openCodeZenState.acerProxyOnline
+}
+
 async function getOpenCodeZenStatus() {
   const now = Date.now()
   const windowMs = 60_000
@@ -2223,6 +2250,8 @@ async function getOpenCodeZenStatus() {
       openCodeZenState._upstreamError = err.message
     }
   }
+  // Probe Acer proxy health periodically
+  await probeAcerProxy()
   return {
     totalRequests: openCodeZenState.totalRequests,
     errors429: openCodeZenState.errors429,
@@ -2232,12 +2261,18 @@ async function getOpenCodeZenStatus() {
     requestsPerMinute: win.length,
     upstreamOk: openCodeZenState._upstreamOk === true,
     upstreamError: openCodeZenState._upstreamError || null,
+    // Fallback fields
+    fallbackActive: openCodeZenState.fallbackActive,
+    fallbackIp: openCodeZenState.fallbackIp,
+    fallbackAt: openCodeZenState.fallbackAt,
+    fallbackAttempts: openCodeZenState.fallbackAttempts,
+    fallbackRecoveries: openCodeZenState.fallbackRecoveries,
+    acerProxyOnline: openCodeZenState.acerProxyOnline,
   }
 }
 
 async function proxyOpenCodeZenRelay(req, res) {
   const subpath = req.path.replace(/^\/v1\/zen/, '') || '/chat/completions'
-  const targetUrl = `https://opencode.ai/zen/v1${subpath}`
   const isStream = req.body?.stream !== false
 
   if (isStream) {
@@ -2247,55 +2282,116 @@ async function proxyOpenCodeZenRelay(req, res) {
     res.flushHeaders?.()
   }
 
+  // Decide rota: direto ou fallback via Acer
+  const useFallback = openCodeZenState.fallbackActive
+  const directUrl = 'https://opencode.ai/zen/v1' + subpath
+  const fallbackUrl = ACER_PROXY_URL + '/zen/v1' + subpath
+
+  // 1) Tenta fetch direto
+  if (!useFallback) {
+    try {
+      const upstream = await fetch(directUrl, {
+        method: req.method,
+        headers: { 'Content-Type': 'application/json', Accept: isStream ? 'text/event-stream' : 'application/json' },
+        body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+      })
+
+      if (upstream.status !== 429 && upstream.status !== 403 && upstream.ok) {
+        // Sucesso direto — se estava em fallback, recupera
+        if (openCodeZenState.fallbackActive) {
+          openCodeZenState.fallbackActive = false
+          openCodeZenState.fallbackIp = '45.236.212.84'
+          openCodeZenState.fallbackRecoveries++
+          console.log('[Fallback] Recuperado: volta ao IP direto do servidor')
+        }
+        if (isStream) {
+          for await (const chunk of upstream.body) res.write(chunk)
+          return res.end()
+        }
+        return res.json(await upstream.json())
+      }
+
+      // Rate limit ou erro — marca e tenta fallback
+      if (upstream.status === 429 || upstream.status === 403) {
+        trackOpenCodeZenRateLimit()
+        console.log('[Fallback] Rate limit detectado (HTTP ' + upstream.status + '), tentando fallback via Acer proxy...')
+      } else {
+        const errText = await upstream.text()
+        console.log('[Fallback] Erro upstream (HTTP ' + upstream.status + '), tentando fallback via Acer proxy...')
+        if (!res.headersSent && !isStream) {
+          res.status(upstream.status)
+          return res.json({ error: { message: 'OpenCode Zen upstream error: ' + upstream.status, detail: errText.slice(0, 200) } })
+        }
+      }
+    } catch (err) {
+      console.log('[Fallback] Erro de conexao direta: ' + err.message + ', tentando fallback...')
+    }
+  }
+
+  // 2) Fallback via proxy Acer
+  // So tenta fallback se nao estiver em cooldown apos falha completa
+  const cooldownUntil = openCodeZenState._fallbackCooldownUntil || 0
+  if (Date.now() < cooldownUntil) {
+    console.log('[Fallback] Em cooldown, nao tentando fallback')
+    if (!res.headersSent) {
+      if (isStream) {
+        res.write('data: ' + JSON.stringify({ error: { message: 'OpenCode Zen rate limit - fallback em cooldown', type: 'rate_limit_error', code: 429 } }) + '\n\n')
+        res.write('data: [DONE]\n\n')
+        return res.end()
+      }
+      return res.json({ error: { message: 'OpenCode Zen rate limit - fallback em cooldown', type: 'rate_limit_error', code: 429 } })
+    }
+    return
+  }
+
   try {
-    const upstream = await fetch(targetUrl, {
+    const fallbackResp = await fetch(fallbackUrl, {
       method: req.method,
       headers: { 'Content-Type': 'application/json', Accept: isStream ? 'text/event-stream' : 'application/json' },
       body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
     })
 
-    if (upstream.status === 429) {
-      trackOpenCodeZenRateLimit()
-      if (!res.headersSent) res.status(429)
-      if (isStream) {
-        res.write('data: ' + JSON.stringify({ error: { message: 'Rate limit OpenCode Zen (IP bloqueado pelo Cloudflare)', type: 'rate_limit_error', code: 429 } }) + '\n\n')
-        res.write('data: [DONE]\n\n')
-        return res.end()
+    if (!fallbackResp.ok) {
+      const fbErr = await fallbackResp.text().catch(() => '')
+      console.log('[Fallback] Falha no Acer proxy: HTTP ' + fallbackResp.status + ' ' + fbErr.slice(0, 100))
+      // Marca cooldown para nao ficar tentando sem parar
+      openCodeZenState._fallbackCooldownUntil = Date.now() + FALLBACK_COOLDOWN_MS
+      if (!res.headersSent) {
+        if (isStream) {
+          res.write('data: ' + JSON.stringify({ error: { message: 'OpenCode Zen rate limit - fallback tambem falhou', type: 'rate_limit_error', code: 429 } }) + '\n\n')
+          res.write('data: [DONE]\n\n')
+          return res.end()
+        }
+        return res.json({ error: { message: 'OpenCode Zen rate limit - fallback tambem falhou', type: 'rate_limit_error', code: 429 } })
       }
-      return res.json({ error: { message: 'Rate limit OpenCode Zen', type: 'rate_limit_error', code: 429 } })
+      return
     }
 
-    if (upstream.status === 403) {
-      // Cloudflare IP block — treat as rate limit so Hermes uses fallback chain
-      trackOpenCodeZenRateLimit()
-      if (!res.headersSent) res.status(429)
-      if (isStream) {
-        res.write('data: ' + JSON.stringify({ error: { message: 'OpenCode Zen bloqueado (IP block Cloudflare)', type: 'rate_limit_error', code: 429 } }) + '\n\n')
-        res.write('data: [DONE]\n\n')
-        return res.end()
-      }
-      return res.json({ error: { message: 'OpenCode Zen bloqueado (IP block Cloudflare)', type: 'rate_limit_error', code: 429 } })
-    }
-
-    if (!upstream.ok) {
-      const errText = await upstream.text()
-      if (!res.headersSent) res.status(upstream.status)
-      return res.json({ error: { message: `OpenCode Zen upstream error: ${upstream.status}`, detail: errText.slice(0, 200) } })
+    // Fallback funcionou!
+    if (!openCodeZenState.fallbackActive) {
+      openCodeZenState.fallbackActive = true
+      openCodeZenState.fallbackAt = new Date().toISOString()
+      openCodeZenState.fallbackIp = '177.23.254.196'
+      openCodeZenState.fallbackAttempts++
+      console.log('[Fallback] Ativado! Requisicoes agora saem pelo IP do Acer (177.23.254.196)')
     }
 
     if (isStream) {
-      for await (const chunk of upstream.body) res.write(chunk)
+      for await (const chunk of fallbackResp.body) res.write(chunk)
       return res.end()
     }
-    return res.json(await upstream.json())
+    return res.json(await fallbackResp.json())
   } catch (err) {
-    if (!res.headersSent) res.status(502)
-    if (isStream) {
-      res.write('data: ' + JSON.stringify({ error: { message: err.message, type: 'relay_error' } }) + '\n\n')
-      res.write('data: [DONE]\n\n')
-      return res.end()
+    console.log('[Fallback] Erro no Acer proxy: ' + err.message)
+    openCodeZenState._fallbackCooldownUntil = Date.now() + FALLBACK_COOLDOWN_MS
+    if (!res.headersSent) {
+      if (isStream) {
+        res.write('data: ' + JSON.stringify({ error: { message: 'Rate limit OpenCode Zen - fallback error: ' + err.message, type: 'rate_limit_error', code: 429 } }) + '\n\n')
+        res.write('data: [DONE]\n\n')
+        return res.end()
+      }
+      return res.json({ error: { message: 'Rate limit OpenCode Zen - fallback error: ' + err.message, type: 'rate_limit_error', code: 429 } })
     }
-    return res.json({ error: err.message })
   }
 }
 
@@ -2743,7 +2839,7 @@ function startStaticServer() {
 
 scheduleCodexRotation()
 
-const server = app.listen(API_PORT, '127.0.0.1', () => {
+const server = app.listen(API_PORT, '0.0.0.0', () => {
   console.log(`Painel de limites API em http://127.0.0.1:${API_PORT}`)
   startStaticServer()
 })

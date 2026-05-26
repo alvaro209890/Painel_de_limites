@@ -48,6 +48,24 @@ export function AiModule({ limits, deepseek, openCodeZen, loading, error }: AiMo
       
       {zen && (
         <SectionCard title="OpenCode Zen Relay" subtitle="Estatísticas do proxy inteligente de alta performance">
+          <div className="mb-3 flex flex-wrap gap-2">
+            {zen.fallbackActive ? (
+              <StatusBadge status="warning" label={"Fallback Acer: " + (zen.fallbackIp || '177.23.254.196')} />
+            ) : (
+              <StatusBadge status="online" label={"Direto: " + (zen.fallbackIp || '45.236.212.84')} />
+            )}
+            {zen.acerProxyOnline ? (
+              <StatusBadge status="online" label="Proxy Acer online" />
+            ) : (
+              <StatusBadge status="offline" label="Proxy Acer offline" />
+            )}
+            {(zen.fallbackAttempts || 0) > 0 && (
+              <StatusBadge status="info" label={"Fallbacks: " + zen.fallbackAttempts} />
+            )}
+            {(zen.fallbackRecoveries || 0) > 0 && (
+              <StatusBadge status="ok" label={"Recuperações: " + zen.fallbackRecoveries} />
+            )}
+          </div>
           <div className="grid gap-3 md:grid-cols-2">
             <MetricCard label="RPM" value={zen.requestsPerMinute} hint="requisições / min" tone={zen.requestsPerMinute > 40 ? 'warning' : 'cyan'} />
             <MetricCard label="Total Hoje" value={formatNumber(zen.totalRequests)} tone="default" />
@@ -101,12 +119,30 @@ export function AiModule({ limits, deepseek, openCodeZen, loading, error }: AiMo
         </div>
       </SectionCard>
       {openCodeZen !== undefined && (
-        <SectionCard title="OpenCode Zen (relay)" subtitle="Relay em: servidor (45.236.212.84) — deepseek-v4-flash-free, nemotron-3-super-free, big-pickle">
+        <SectionCard title="OpenCode Zen (relay)" subtitle="Relay: servidor (45.236.212.84) + fallback Acer (177.23.254.196)">
+          <div className="mb-3 flex flex-wrap gap-2">
+            {openCodeZen?.fallbackActive ? (
+              <StatusBadge status="warning" label={"Fallback via Acer: " + (openCodeZen?.fallbackIp || '177.23.254.196')} />
+            ) : (
+              <StatusBadge status="online" label={"Saida direta: " + (openCodeZen?.fallbackIp || '45.236.212.84')} />
+            )}
+            {openCodeZen?.acerProxyOnline ? (
+              <StatusBadge status="online" label="Proxy Acer online" />
+            ) : (
+              <StatusBadge status="offline" label="Proxy Acer offline" />
+            )}
+            {(openCodeZen?.fallbackAttempts || 0) > 0 && (
+              <StatusBadge status="info" label={"Fallbacks: " + openCodeZen?.fallbackAttempts} />
+            )}
+            {(openCodeZen?.fallbackRecoveries || 0) > 0 && (
+              <StatusBadge status="ok" label={"Recuperacoes: " + openCodeZen?.fallbackRecoveries} />
+            )}
+          </div>
           <div className="grid gap-3 md:grid-cols-2">
             <MetricCard label="Req/min" value={String(openCodeZen?.requestsPerMinute ?? 0)} tone="cyan" />
             <MetricCard label="Total" value={formatNumber(openCodeZen?.totalRequests)} tone="default" />
             <MetricCard label="429s" value={String(openCodeZen?.errors429 ?? 0)} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'good'} />
-            <MetricCard label="Último 429" value={openCodeZen?.lastRateLimitAt ? formatDate(openCodeZen.lastRateLimitAt) : '—'} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'default'} />
+            <MetricCard label="Ultimo 429" value={openCodeZen?.lastRateLimitAt ? formatDate(openCodeZen.lastRateLimitAt) : '—'} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'default'} />
           </div>
           {openCodeZen?.sourceStats && Object.keys(openCodeZen.sourceStats).length > 0 && (
             <div className="mt-4">
@@ -123,9 +159,9 @@ export function AiModule({ limits, deepseek, openCodeZen, loading, error }: AiMo
             </div>
           )}
           {(!openCodeZen?.sourceStats || Object.keys(openCodeZen.sourceStats).length === 0) && (
-            <p className="mt-4 text-xs text-slate-500">Nenhuma requisição ainda. Acer usa este relay quando o IP residencial é bloqueado.</p>
+            <p className="mt-4 text-xs text-slate-500">Nenhuma requisicao registrada ainda.</p>
           )}
-          <p className="mt-3 text-xs text-slate-600">Último request: {openCodeZen?.lastRequestAt ? formatDate(openCodeZen.lastRequestAt) : '—'}</p>
+          <p className="mt-3 text-xs text-slate-600">Ultimo request: {openCodeZen?.lastRequestAt ? formatDate(openCodeZen.lastRequestAt) : '—'}</p>
         </SectionCard>
       )}
     </div>

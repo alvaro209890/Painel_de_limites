@@ -116,6 +116,80 @@ e o servidor Node precisa ouvir em `0.0.0.0:8787`.
 
 ---
 
+## 1-B. Fallback Automatico com Proxy Acer
+
+### Arquitetura
+
+Quando o IP do servidor (45.236.212.84) toma rate limit (429) ou bloqueio (403) 
+na OpenCode, o relay automaticamente tenta a requisicao via **proxy no Acer**, 
+que sai pelo IP do notebook (177.23.254.196).
+
+```
+                    +-----------------------+
+                    |  Painel de Limites    |
+                    |  (server.js)          |
+                    |                       |
+                    |  1. fetch direto      |----> OpenCode (45.236.212.84)
+                    |     se 429/403        |
+                    |  2. fetch via proxy   |----> Acer proxy ----> OpenCode (177.23.254.196)
+                    |     Acer              |       (:8788)
+                    +-----------------------+
+```
+
+### Componentes
+
+| Componente | Local | Descricao |
+|---|---|---|
+| `agent/proxy-acer.js` | Acer (notebook) | Proxy Node.js que faz fetch para OpenCode saindo pelo IP do Acer |
+| `agent/acer-opencode-proxy.service` | Acer | systemd user service que mantem o proxy rodando 24/7 |
+| `server.js: proxyOpenCodeZenRelay()` | Servidor | Logica de fallback: detecta rate limit e tenta via Acer |
+| `server.js: probeAcerProxy()` | Servidor | Healthcheck periodico do proxy Acer (a cada 30s) |
+
+### Comportamento
+
+1. Tenta fetch direto para `https://opencode.ai/zen/v1/...`
+2. Se HTTP 429 ou 403:
+   - Marca rate limit no `openCodeZenState`
+   - Tenta fetch via `ACER_PROXY_URL/zen/v1/...`
+3. Se fallback funciona:
+   - `fallbackActive = true`, `fallbackIp = '177.23.254.196'`
+   - Todas as requisicoes seguintes vao pelo proxy Acer
+4. Se fallback falha:
+   - Entra em cooldown (`FALLBACK_COOLDOWN_MS`)
+   - Retorna erro 429 para o cliente
+5. Recuperacao automatica:
+   - Quando o fetch direto volta a funcionar, `fallbackActive = false`
+   - Volta a usar o IP do servidor
+
+### Estado no Dashboard
+
+O modulo IA do painel exibe:
+
+| Indicador | Descricao |
+|---|---|
+| `Saida direta: 45.236.212.84` | Usando IP do servidor (verde) |
+| `Fallback via Acer: 177.23.254.196` | Usando IP do Acer (amarelo) |
+| `Proxy Acer online/offline` | Status do proxy no notebook |
+| `Fallbacks: N` | Quantas vezes ativou fallback |
+| `Recuperacoes: N` | Quantas vezes voltou ao normal |
+
+### Instalacao do proxy no Acer
+
+```bash
+# Copiar o script
+scp server@100.65.138.58:/media/server/HD Backup/Servidores_NAO_MEXA/Painel_de_limites/agent/proxy-acer.js ~/
+
+# Copiar e habilitar o servico systemd
+cp agent/acer-opencode-proxy.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acer-opencode-proxy.service
+
+# Verificar
+systemctl --user status acer-opencode-proxy.service
+curl http://localhost:8788/health
+```
+
+
 2. [OpenCode Zen Relay](#2-opencode-zen-relay)
 3. [Gateway OpenAI-compatible (Codex/GPT)](#3-gateway-openai-compatible-codexgpt)
 4. [Hermes + OpenCode Zen Free](#4-hermes--opencode-zen-free)

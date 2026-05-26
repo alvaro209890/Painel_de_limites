@@ -1,0 +1,17 @@
+[Unit]
+Description=Acer OpenCode Proxy — Fallback relay para OpenCode Zen
+Documentation=https://github.com/alvaro209890/Painel_de_limites/blob/main/agent/proxy-acer.js
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/acer/.nvm/versions/node/v22.22.2/bin/node /home/acer/proxy-acer.js
+Restart=on-failure
+RestartSec=10
+Environment=ACER_PROXY_PORT=8788
+# Só aceita conexões da rede confiável (Tailscale, localhost)
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
