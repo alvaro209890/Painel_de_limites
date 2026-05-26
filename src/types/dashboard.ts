@@ -90,6 +90,8 @@ export type OpenCodeZenStatus = {
   lastRequestAt: string | null
   requestsPerMinute: number
   sourceStats: Record<string, ZenSourceStat>
+  upstreamOk: boolean
+  upstreamError: string | null
 }
 
 export type CodexAdminStatus = {

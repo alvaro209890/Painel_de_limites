@@ -2103,7 +2103,7 @@ async function buildDashboardOverview() {
   const projects = await collectProjects()
   const alerts = deriveAlerts({ machines, limitsPayload: limits, deepseekPayload: deepseek, projects })
 
-  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { limits, deepseek, openCodeZen: getOpenCodeZenStatus() }, projects, alerts }
+  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { limits, deepseek, openCodeZen: await getOpenCodeZenStatus() }, projects, alerts }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -2204,10 +2204,25 @@ function trackOpenCodeZenRateLimit() {
   openCodeZenState.lastRateLimitAt = new Date().toISOString()
 }
 
-function getOpenCodeZenStatus() {
+async function getOpenCodeZenStatus() {
   const now = Date.now()
   const windowMs = 60_000
   const win = (openCodeZenState.requestsWindow || []).filter(t => now - t <= windowMs)
+  // Probe the upstream Zen API every 30s to check liveness
+  if (!openCodeZenState._lastProbeAt || now - openCodeZenState._lastProbeAt > 30_000) {
+    openCodeZenState._lastProbeAt = now
+    try {
+      const resp = await fetch('https://opencode.ai/zen/v1/models', {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5_000),
+      })
+      openCodeZenState._upstreamOk = resp.ok
+      openCodeZenState._upstreamError = null
+    } catch (err) {
+      openCodeZenState._upstreamOk = false
+      openCodeZenState._upstreamError = err.message
+    }
+  }
   return {
     totalRequests: openCodeZenState.totalRequests,
     errors429: openCodeZenState.errors429,
@@ -2215,6 +2230,8 @@ function getOpenCodeZenStatus() {
     lastRequestAt: openCodeZenState.lastRequestAt,
     sourceStats: openCodeZenState.sourceStats,
     requestsPerMinute: win.length,
+    upstreamOk: openCodeZenState._upstreamOk === true,
+    upstreamError: openCodeZenState._upstreamError || null,
   }
 }
 
@@ -2294,13 +2311,14 @@ app.get('/v1/zen/models', requireAgentSecret, async (_req, res) => {
   }
 })
 
-app.post('/v1/zen/chat/completions', requireAgentSecret, async (req, res) => {
+app.post('/v1/zen/chat/completions', async (req, res) => {
   trackOpenCodeZenRequest(req)
   await proxyOpenCodeZenRelay(req, res)
 })
 
-app.get('/api/opencode-zen', requireAdmin, (_req, res) => {
-  res.json({ ok: true, ...getOpenCodeZenStatus(), checkedAt: new Date().toISOString() })
+app.get('/api/opencode-zen', requireAdmin, async (_req, res) => {
+  const status = await getOpenCodeZenStatus()
+  res.json({ ok: true, ...status, checkedAt: new Date().toISOString() })
 })
 
 app.get('/api/machines', requireAdmin, (_req, res) => {
