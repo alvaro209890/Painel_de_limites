@@ -974,12 +974,21 @@ let rotationLastRunAt = 0
 let rotationLastResult = null
 
 // ─── OpenCode Zen Relay state ───────────────────────────────────
+// Machine name map for OpenCode Zen relay source tracking
+const ZEN_MACHINE_MAP = {
+  '100.102.202.63': 'Acer',
+  '100.65.138.58': 'servidor',
+  '127.0.0.1': 'servidor (local)',
+  '::1': 'servidor (local)',
+}
+
 let openCodeZenState = {
   totalRequests: 0,
   errors429: 0,
   lastRateLimitAt: null,
   lastRequestAt: null,
   requestsWindow: [],
+  sourceStats: {}, // { ip: { count, lastAt, machineName } }
 }
 
 function readRotationConfig() {
@@ -2171,12 +2180,23 @@ app.get('/api/deepseek', requireAdmin, async (_req, res) => {
 
 // ─── OpenCode Zen Relay ──────────────────────────────────────────
 
-function trackOpenCodeZenRequest() {
+function trackOpenCodeZenRequest(req) {
   const now = Date.now()
   openCodeZenState.totalRequests++
   openCodeZenState.lastRequestAt = new Date(now).toISOString()
   openCodeZenState.requestsWindow.push(now)
   openCodeZenState.requestsWindow = openCodeZenState.requestsWindow.filter(t => now - t <= 60_000)
+  // Track per-source stats
+  if (req) {
+    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim()
+    if (ip) {
+      if (!openCodeZenState.sourceStats[ip]) {
+        openCodeZenState.sourceStats[ip] = { count: 0, lastAt: null, machineName: ZEN_MACHINE_MAP[ip] || ip }
+      }
+      openCodeZenState.sourceStats[ip].count++
+      openCodeZenState.sourceStats[ip].lastAt = new Date(now).toISOString()
+    }
+  }
 }
 
 function trackOpenCodeZenRateLimit() {
@@ -2193,6 +2213,7 @@ function getOpenCodeZenStatus() {
     errors429: openCodeZenState.errors429,
     lastRateLimitAt: openCodeZenState.lastRateLimitAt,
     lastRequestAt: openCodeZenState.lastRequestAt,
+    sourceStats: openCodeZenState.sourceStats,
     requestsPerMinute: win.length,
   }
 }
@@ -2262,7 +2283,7 @@ app.get('/v1/zen/models', requireAgentSecret, async (_req, res) => {
 })
 
 app.post('/v1/zen/chat/completions', requireAgentSecret, async (req, res) => {
-  trackOpenCodeZenRequest()
+  trackOpenCodeZenRequest(req)
   await proxyOpenCodeZenRelay(req, res)
 })
 

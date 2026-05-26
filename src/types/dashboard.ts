@@ -77,12 +77,19 @@ export type DeepSeekPayload = {
   balance: DeepSeekBalanceInfo
 }
 
+export type ZenSourceStat = {
+  count: number
+  lastAt: string | null
+  machineName: string
+}
+
 export type OpenCodeZenStatus = {
   totalRequests: number
   errors429: number
   lastRateLimitAt: string | null
   lastRequestAt: string | null
   requestsPerMinute: number
+  sourceStats: Record<string, ZenSourceStat>
 }
 
 export type CodexAdminStatus = {

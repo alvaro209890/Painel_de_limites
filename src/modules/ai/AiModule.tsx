@@ -77,16 +77,31 @@ export function AiModule({ limits, deepseek, openCodeZen, loading, error }: AiMo
         </div>
       </SectionCard>
       {openCodeZen !== undefined && (
-        <SectionCard title="OpenCode Zen (relay)" subtitle="Modelos gratuitos via servidor — rotação automática de IP">
+        <SectionCard title="OpenCode Zen (relay)" subtitle="Relay em: servidor (45.236.212.84) — deepseek-v4-flash-free, nemotron-3-super-free, big-pickle">
           <div className="grid gap-3 md:grid-cols-2">
             <MetricCard label="Req/min" value={String(openCodeZen?.requestsPerMinute ?? 0)} tone="cyan" />
             <MetricCard label="Total" value={formatNumber(openCodeZen?.totalRequests)} tone="default" />
             <MetricCard label="429s" value={String(openCodeZen?.errors429 ?? 0)} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'good'} />
             <MetricCard label="Último 429" value={openCodeZen?.lastRateLimitAt ? formatDate(openCodeZen.lastRateLimitAt) : '—'} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'default'} />
           </div>
-          <p className="mt-4 text-xs text-slate-500">
-            Último request: {openCodeZen?.lastRequestAt ? formatDate(openCodeZen.lastRequestAt) : '—'}
-          </p>
+          {openCodeZen?.sourceStats && Object.keys(openCodeZen.sourceStats).length > 0 && (
+            <div className="mt-4">
+              <p className="mb-2 text-xs font-semibold text-slate-400">Requisições por máquina:</p>
+              <div className="grid gap-2">
+                {Object.entries(openCodeZen.sourceStats).map(([ip, stat]) => (
+                  <div key={ip} className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2 text-xs">
+                    <span className="font-medium text-cyan-200">{stat.machineName}</span>
+                    <span className="text-slate-300">{formatNumber(stat.count)} req</span>
+                    <span className="text-slate-500">{stat.lastAt ? formatDate(stat.lastAt) : '—'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(!openCodeZen?.sourceStats || Object.keys(openCodeZen.sourceStats).length === 0) && (
+            <p className="mt-4 text-xs text-slate-500">Nenhuma requisição ainda. Acer usa este relay quando o IP residencial é bloqueado.</p>
+          )}
+          <p className="mt-3 text-xs text-slate-600">Último request: {openCodeZen?.lastRequestAt ? formatDate(openCodeZen.lastRequestAt) : '—'}</p>
         </SectionCard>
       )}
     </div>
