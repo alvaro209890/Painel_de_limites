@@ -118,6 +118,7 @@ Ou use um tunnel persistente apontando para o domínio `limites.cursar.space`.
 - **Saldo DeepSeek:** `https://api.deepseek.com/v1/user/balance` (lê chave de `~/.hermes/.env`)
 - **Métricas do PC servidor:** `/proc/stat`, `sensors`, `df`, `os` do Node.js
 - **Métricas de PCs remotos:** `agent/limits-agent.py` envia `POST /api/agent/heartbeat`; últimos heartbeats ficam em `~/.config/codex-profiles/agents-heartbeats.json`
+- **Runbook Hermes/OpenCode Free:** `docs/hermes-opencode-free.md` documenta o provider `opencode-zen-free`, os 3 modelos free, a falha de streaming (`RemoteProtocolError: incomplete chunked read`) e o procedimento de teste/restart nos dois PCs.
 - **Máquinas:** `config/machines.json` + auto-registro quando um `machine_id` novo envia heartbeat
 - **Projetos:** `config/projects.json` + `pm2 jlist` + HTTP healthcheck
 
