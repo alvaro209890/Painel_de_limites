@@ -73,6 +73,16 @@ Dashboard local para acompanhar limites de uso do Codex (janela de 5h, janela se
 | `POST` | `/api/codex-rotation/run-once` | Executar teste ou rotação manual *(admin)* |
 | `POST` | `/api/llm-route` | Rota local para automações: GPT-5.5 Medium via Hermes Codex + fallback DeepSeek v4 Pro *(agent secret)* |
 
+### 🧪 OpenCode Ecosystem
+
+Três integrações OpenCode passam pelo Painel:
+
+- **OpenCode Zen Relay** (`/v1/zen/*`) — proxy inteligente para modelos free da OpenCode Zen, com rastreamento de RPM, rate limits e liveness probe.
+- **Gateway OpenAI-compatible** (`/v1/*`) — expõe Codex/GPT e Gemini como API OpenAI para clientes como OpenCode CLI.
+- **Hermes + OpenCode Zen Free** — o Hermes Gateway usa `opencode-zen-free` como provider com fallback non-streaming.
+
+Consulte a documentação completa: [`docs/opencode-ecosystem.md`](docs/opencode-ecosystem.md)
+
 ---
 
 ## Como rodar
