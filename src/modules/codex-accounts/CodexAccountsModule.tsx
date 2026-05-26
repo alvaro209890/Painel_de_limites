@@ -76,6 +76,10 @@ export function CodexAccountsModule({
   const hermesUsage = hermesCodex?.usage
   const profiles = profilesData?.profiles || []
   const rotation = rotationStatus?.config
+  const geminiAuthExpired = geminiLoginStatus?.oauthExpired === true
+  const geminiAuthReady = Boolean(geminiLoginStatus?.authExists && !geminiAuthExpired)
+  const geminiBadgeStatus = geminiAuthReady ? 'online' : geminiLoginStatus?.authExists ? 'warning' : 'offline'
+  const geminiBadgeLabel = geminiAuthReady ? 'Gemini logado' : geminiLoginStatus?.authExists ? 'OAuth expirado' : 'Sem OAuth'
 
   return (
     <div className="space-y-5">
@@ -162,13 +166,15 @@ export function CodexAccountsModule({
                 <h3 className="mt-1 text-lg font-black text-white">Login Gemini pelo navegador</h3>
                 <p className="mt-1 text-sm text-violet-100/75">Abre o OAuth do Google em nova aba e salva em ~/.gemini/oauth_creds.json para o provider limites-gemini do OpenCode deste PC.</p>
               </div>
-              <StatusBadge status={geminiLoginStatus?.authExists ? 'online' : 'offline'} label={geminiLoginStatus?.authExists ? 'Gemini logado' : 'Sem OAuth'} />
+              <StatusBadge status={geminiBadgeStatus} label={geminiBadgeLabel} />
             </div>
-            <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+            <div className="mt-3 grid gap-3 text-sm md:grid-cols-3">
               <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Rodando</p><p className="font-bold text-slate-100">{boolLabel(Boolean(geminiLoginStatus?.running))}</p></div>
               <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Exit code</p><p className="font-bold text-slate-100">{geminiLoginStatus?.exitCode ?? '-'}</p></div>
               <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">E-mail ativo</p><p className="font-bold text-violet-100">{geminiLoginStatus?.activeEmail || '-'}</p></div>
               <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Auth detectado</p><p className="font-bold text-slate-100">{boolLabel(Boolean(geminiLoginStatus?.authExists))}</p></div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Refresh token</p><p className="font-bold text-slate-100">{boolLabel(Boolean(geminiLoginStatus?.hasRefreshToken))}</p></div>
+              <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-slate-500">Expira em</p><p className="font-bold text-slate-100">{formatDate(geminiLoginStatus?.oauthExpiresAt)}</p></div>
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <button className="rounded-xl bg-violet-300 px-4 py-2 text-sm font-black text-slate-950 hover:bg-violet-200 disabled:opacity-50" onClick={onStartGeminiLogin} type="button" disabled={busy || geminiLoginStatus?.running}>

@@ -455,7 +455,9 @@ function deleteCodexProfile(slug) {
 
 function sanitizeLoginOutput(output) {
   return String(output || '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
     .replace(/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/g, '[jwt-redacted]')
     .replace(/[A-Za-z0-9_-]{80,}/g, '[token-redacted]')
@@ -468,6 +470,30 @@ function extractLoginUrl(output) {
 
 function extractUserCode(output) {
   return String(output || '').match(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b/)?.[0] || null
+}
+
+function geminiCliPathEnv() {
+  const candidates = [
+    '/home/server/.nvm/versions/node/v20.20.0/bin',
+    '/home/server/.nvm/versions/node/v22.22.2/bin',
+    path.join(os.homedir(), '.npm-global', 'bin'),
+  ]
+  const current = process.env.PATH || '/usr/bin:/bin'
+  return [...candidates.filter((dir) => fs.existsSync(dir)), current].join(':')
+}
+
+function buildGeminiCliEnv(homeDir, options = {}) {
+  const env = {
+    ...process.env,
+    HOME: homeDir,
+    PATH: geminiCliPathEnv(),
+    TERM: process.env.TERM || 'xterm-256color',
+    NO_COLOR: '1',
+    GEMINI_CLI_TRUST_WORKSPACE: 'true',
+  }
+  if (options.noBrowser) env.NO_BROWSER = 'true'
+  for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA', 'GOOGLE_CLOUD_PROJECT']) delete env[key]
+  return env
 }
 
 let codexLoginSession = null
@@ -577,14 +603,25 @@ function readGeminiAccountEmail() {
   return accounts?.active || null
 }
 
+function readGeminiOAuthSummary() {
+  const oauth = readJson(GEMINI_OAUTH_PATH)
+  const expiryMs = Number(oauth?.expiry_date || 0)
+  return {
+    authExists: fs.existsSync(GEMINI_OAUTH_PATH),
+    hasRefreshToken: Boolean(oauth?.refresh_token),
+    oauthExpiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
+    oauthExpired: expiryMs ? expiryMs <= Date.now() : null,
+  }
+}
+
 let geminiLoginSession = null
 
 function geminiLoginStatusPayload() {
   const session = geminiLoginSession
-  const authExists = fs.existsSync(GEMINI_OAUTH_PATH)
+  const oauth = readGeminiOAuthSummary()
   const activeEmail = readGeminiAccountEmail()
   if (!session) {
-    return { ok: true, running: false, exitCode: null, loginUrl: null, userCode: null, outputTail: '', authExists, activeEmail: null, needsCode: false, error: null }
+    return { ok: true, running: false, exitCode: null, loginUrl: null, userCode: null, outputTail: '', ...oauth, activeEmail, needsCode: false, error: null }
   }
   const outputTail = sanitizeLoginOutput(session.output).slice(-4000)
   const rawOutput = session.output.slice(-2000)
@@ -599,7 +636,7 @@ function geminiLoginStatusPayload() {
     loginUrl: url,
     userCode: extractUserCode(outputTail),
     outputTail,
-    authExists,
+    ...oauth,
     activeEmail,
     needsCode: /Enter the authorization code/i.test(rawOutput),
     error: session.error,
@@ -614,12 +651,10 @@ function startGeminiLoginProcess() {
   }
   const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-cli-login-'))
   ensureGeminiSettingsForOAuth(loginHome)
-  const spawnEnv = { ...process.env, HOME: loginHome, PATH: geminiCliPathEnv(), TERM: process.env.TERM || 'xterm-256color', NO_COLOR: '1' }
-  for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA', 'GOOGLE_CLOUD_PROJECT']) delete spawnEnv[key]
-  // Use bash -c with pre-seeded /auth via printf, pipe for user input
-  const lh = loginHome
-  const bashCmd = "echo '/auth'; HOME=" + lh + " script -q -c \"HOME=" + lh + " gemini --skip-trust\" /dev/null"
-  const child = spawn('bash', ['-c', bashCmd], {
+  const spawnEnv = buildGeminiCliEnv(loginHome, { noBrowser: true })
+  const geminiCommand = 'gemini -p "Login Gemini CLI concluido. Responda somente: OK" --model gemini-2.5-flash --output-format json --skip-trust'
+  const scriptArgs = ['-q', '-c', geminiCommand, '/dev/null']
+  const child = spawn('script', scriptArgs, {
     env: spawnEnv,
     cwd: loginHome,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -627,7 +662,7 @@ function startGeminiLoginProcess() {
   const session = {
     id: crypto.randomUUID(),
     startedAt: new Date().toISOString(),
-    command: bashCmd,
+    command: `NO_BROWSER=true script ${scriptArgs.join(' ')}`,
     loginHome,
     backupPath: null,
     child,
@@ -642,7 +677,7 @@ function startGeminiLoginProcess() {
     session.output = `${session.output}${text}`.slice(-12000)
     // Capture OAuth URL from Gemini output
     if (/Enter the authorization code/i.test(text) && !session.loginUrl) {
-      const urlMatch = text.match(/https?:\/\/accounts\.google\.com[^\s,\)]+/)
+      const urlMatch = sanitizeLoginOutput(session.output).match(/https?:\/\/accounts\.google\.com[^\s,\)]+/)
       if (urlMatch) session.loginUrl = urlMatch[0].replace(/[)\]]+$/, '')
     }
   }
@@ -658,12 +693,15 @@ function startGeminiLoginProcess() {
     const tmpGeminiDir = path.join(loginHome, '.gemini')
     const tmpOauth = path.join(tmpGeminiDir, 'oauth_creds.json')
     try {
-      if (code === 0 && fs.existsSync(tmpOauth)) {
+      if (fs.existsSync(tmpOauth)) {
         session.backupPath = backupGeminiCliAuth()
         ensureSecureDir(GEMINI_DIR)
         for (const name of ['oauth_creds.json', 'google_accounts.json', 'settings.json']) {
           const src = path.join(tmpGeminiDir, name)
           if (fs.existsSync(src)) fs.copyFileSync(src, path.join(GEMINI_DIR, name))
+        }
+        if (code !== 0 && !session.error) {
+          session.error = 'Credenciais Gemini salvas, mas o smoke test da CLI terminou com codigo ' + code
         }
       }
     } catch (error) {
@@ -1332,16 +1370,6 @@ async function ensureCodexCredentialForGateway() {
 }
 
 
-function geminiCliPathEnv() {
-  const candidates = [
-    '/home/server/.nvm/versions/node/v20.20.0/bin',
-    '/home/server/.nvm/versions/node/v22.22.2/bin',
-    path.join(os.homedir(), '.npm-global', 'bin'),
-  ]
-  const current = process.env.PATH || '/usr/bin:/bin'
-  return [...candidates.filter((dir) => fs.existsSync(dir)), current].join(':')
-}
-
 function parseGeminiCliJson(stdout) {
   const text = String(stdout || '').trim()
   if (!text) throw new Error('Gemini CLI nao retornou stdout')
@@ -1362,7 +1390,7 @@ function runGeminiCli({ model, prompt }) {
       '--skip-trust',
     ], {
       cwd: os.homedir(),
-      env: { ...process.env, PATH: geminiCliPathEnv(), NO_COLOR: '1', TERM: process.env.TERM || 'xterm-256color' },
+      env: buildGeminiCliEnv(os.homedir(), { noBrowser: true }),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''

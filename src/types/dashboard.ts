@@ -124,6 +124,9 @@ export type CliLoginStatus = {
   outputTail: string
   authExists: boolean
   activeEmail?: string | null
+  hasRefreshToken?: boolean
+  oauthExpiresAt?: string | null
+  oauthExpired?: boolean | null
   needsCode?: boolean
   error: string | null
 }

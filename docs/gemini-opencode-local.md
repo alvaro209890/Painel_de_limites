@@ -37,10 +37,31 @@ gemini -p '<prompt convertido das mensagens chat>' \
   --skip-trust
 ```
 
+O processo roda com ambiente limpo para evitar troca acidental de provider:
+
+- `HOME=~`;
+- `NO_BROWSER=true`;
+- `GEMINI_CLI_TRUST_WORKSPACE=true`;
+- sem `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA` ou `GOOGLE_CLOUD_PROJECT`.
+
 Depois converte `response` da saída JSON da Gemini CLI para resposta OpenAI-compatible:
 
 - streaming: envia um chunk `role`, um chunk com `content` completo e `[DONE]`;
 - não-streaming: retorna `choices[0].message.content`.
+
+## Login OAuth pelo painel
+
+A aba de contas Codex tem um card `Gemini CLI` que lê:
+
+- `~/.gemini/oauth_creds.json`;
+- `~/.gemini/google_accounts.json`;
+- `~/.gemini/settings.json`.
+
+O status mostra conta ativa, presença de refresh token e vencimento do token OAuth. Quando o OAuth vence e a Gemini CLI não consegue renovar sozinha, o gateway retorna erro 502 até refazer o login.
+
+O botão `Login Gemini CLI` inicia a CLI em um `script` pseudo-TTY com `NO_BROWSER=true`. A CLI imprime uma URL do Google no painel, o usuário autoriza no navegador e cola o código retornado. Ao concluir, o painel faz backup das credenciais antigas em `~/.config/codex-profiles/backups/` e copia as novas credenciais para `~/.gemini/`.
+
+O fluxo foi corrigido em maio de 2026 porque a versão anterior executava `echo '/auth'` fora do processo da Gemini CLI. Isso fazia o painel parecer iniciar o login, mas a CLI nunca recebia o comando de autenticação corretamente.
 
 ## Limitações importantes
 
@@ -68,6 +89,10 @@ npm run build
 Depois de reiniciar o PM2:
 
 ```bash
+# Status do painel deve mostrar activeEmail, authExists e oauthExpiresAt
+curl -sS https://limites.cursar.space/api/gemini-login/status \
+  -H "Cookie: limits_session=<sessao-admin>"
+
 # Com token normal: deve listar só GPT/Codex
 curl -sS https://limites.cursar.space/v1/models \
   -H "Authorization: Bearer $LIMITS_PANEL_AGENT_SECRET" | jq '.data[].id'
