@@ -14,7 +14,7 @@ type TabId = 'machines' | 'ai' | 'codexAccounts' | 'projects' | 'alerts'
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'machines', label: 'Máquinas', icon: '💻' },
   { id: 'ai', label: 'IA', icon: '🧠' },
-  { id: 'codexAccounts', label: 'Contas Codex', icon: '🔐' },
+  { id: 'codexAccounts', label: 'Credenciais', icon: '🔐' },
   { id: 'projects', label: 'Projetos', icon: '🚀' },
   { id: 'alerts', label: 'Alertas', icon: '🚨' },
 ]
@@ -600,6 +600,8 @@ function App() {
         <CodexAccountsModule
           admin={adminStatus}
           profilesData={profilesData}
+          deepseek={dashboard?.ai.deepseek || null}
+          openCodeZen={dashboard?.ai.openCodeZen ?? null}
           hermesCodex={dashboard?.ai.limits?.hermesCodex || null}
           loginStatus={codexLogin}
           geminiLoginStatus={geminiLogin}
@@ -670,7 +672,7 @@ function App() {
 
               <div className="mt-7 grid gap-3 md:grid-cols-5">
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">PCs online</p><p className="mt-1 text-xl font-semibold">{counts.machinesOnline}/{counts.machinesTotal}</p></div>
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Perfis Codex</p><p className="mt-1 text-xl font-semibold">{counts.profilesTotal}</p></div>
+                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Perfis salvos</p><p className="mt-1 text-xl font-semibold">{counts.profilesTotal}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Projetos servidos</p><p className="mt-1 text-xl font-semibold">{counts.projectsOnline}/{counts.projectsTotal}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Críticos</p><p className="mt-1 text-xl font-semibold text-rose-100">{counts.criticalAlerts}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Atualizado</p><p className="mt-1 text-sm font-semibold">{formatDate(dashboard?.checkedAt)}</p></div>
