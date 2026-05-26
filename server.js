@@ -973,6 +973,15 @@ let rotationRunning = false
 let rotationLastRunAt = 0
 let rotationLastResult = null
 
+// ─── OpenCode Zen Relay state ───────────────────────────────────
+let openCodeZenState = {
+  totalRequests: 0,
+  errors429: 0,
+  lastRateLimitAt: null,
+  lastRequestAt: null,
+  requestsWindow: [],
+}
+
 function readRotationConfig() {
   ensureProfileDirs()
   const saved = readJson(ROTATION_CONFIG_FILE) || {}
@@ -2015,6 +2024,22 @@ function deriveAlerts({ machines, limitsPayload, deepseekPayload, projects }) {
     }
   }
 
+  const zenStatus = getOpenCodeZenStatus()
+  if (zenStatus.lastRateLimitAt) {
+    const msSince = Date.now() - new Date(zenStatus.lastRateLimitAt).getTime()
+    if (msSince < 5 * 60 * 1000) {
+      alerts.push({
+        id: 'opencode-zen-rate-limit',
+        severity: 'warning',
+        module: 'ai',
+        title: 'OpenCode Zen rate limit ativo',
+        message: `Último 429 há ${Math.round(msSince / 1000)}s. Relay via servidor pode estar bloqueado.`,
+        createdAt: now,
+        sourceId: 'opencode-zen',
+      })
+    }
+  }
+
   return alerts
 }
 
@@ -2069,7 +2094,7 @@ async function buildDashboardOverview() {
   const projects = await collectProjects()
   const alerts = deriveAlerts({ machines, limitsPayload: limits, deepseekPayload: deepseek, projects })
 
-  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { limits, deepseek }, projects, alerts }
+  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { limits, deepseek, openCodeZen: getOpenCodeZenStatus() }, projects, alerts }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -2142,6 +2167,107 @@ app.get('/api/deepseek', requireAdmin, async (_req, res) => {
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
   }
+})
+
+// ─── OpenCode Zen Relay ──────────────────────────────────────────
+
+function trackOpenCodeZenRequest() {
+  const now = Date.now()
+  openCodeZenState.totalRequests++
+  openCodeZenState.lastRequestAt = new Date(now).toISOString()
+  openCodeZenState.requestsWindow.push(now)
+  openCodeZenState.requestsWindow = openCodeZenState.requestsWindow.filter(t => now - t <= 60_000)
+}
+
+function trackOpenCodeZenRateLimit() {
+  openCodeZenState.errors429++
+  openCodeZenState.lastRateLimitAt = new Date().toISOString()
+}
+
+function getOpenCodeZenStatus() {
+  const now = Date.now()
+  const windowMs = 60_000
+  const win = (openCodeZenState.requestsWindow || []).filter(t => now - t <= windowMs)
+  return {
+    totalRequests: openCodeZenState.totalRequests,
+    errors429: openCodeZenState.errors429,
+    lastRateLimitAt: openCodeZenState.lastRateLimitAt,
+    lastRequestAt: openCodeZenState.lastRequestAt,
+    requestsPerMinute: win.length,
+  }
+}
+
+async function proxyOpenCodeZenRelay(req, res) {
+  const subpath = req.path.replace(/^\/v1\/zen/, '') || '/chat/completions'
+  const targetUrl = `https://opencode.ai/zen/v1${subpath}`
+  const isStream = req.body?.stream !== false
+
+  if (isStream) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders?.()
+  }
+
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers: { 'Content-Type': 'application/json', Accept: isStream ? 'text/event-stream' : 'application/json' },
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+    })
+
+    if (upstream.status === 429) {
+      trackOpenCodeZenRateLimit()
+      if (!res.headersSent) res.status(429)
+      if (isStream) {
+        res.write('data: ' + JSON.stringify({ error: { message: 'Rate limit OpenCode Zen (IP bloqueado pelo Cloudflare)', type: 'rate_limit_error', code: 429 } }) + '\n\n')
+        res.write('data: [DONE]\n\n')
+        return res.end()
+      }
+      return res.json({ error: { message: 'Rate limit OpenCode Zen', type: 'rate_limit_error', code: 429 } })
+    }
+
+    if (!upstream.ok) {
+      const errText = await upstream.text()
+      if (!res.headersSent) res.status(upstream.status)
+      return res.json({ error: { message: `OpenCode Zen upstream error: ${upstream.status}`, detail: errText.slice(0, 200) } })
+    }
+
+    if (isStream) {
+      for await (const chunk of upstream.body) res.write(chunk)
+      return res.end()
+    }
+    return res.json(await upstream.json())
+  } catch (err) {
+    if (!res.headersSent) res.status(502)
+    if (isStream) {
+      res.write('data: ' + JSON.stringify({ error: { message: err.message, type: 'relay_error' } }) + '\n\n')
+      res.write('data: [DONE]\n\n')
+      return res.end()
+    }
+    return res.json({ error: err.message })
+  }
+}
+
+app.get('/v1/zen/models', requireAgentSecret, async (_req, res) => {
+  try {
+    const upstream = await fetch('https://opencode.ai/zen/v1/models', { headers: { Accept: 'application/json' } })
+    const data = await upstream.json()
+    const freeIds = new Set(['big-pickle', 'deepseek-v4-flash-free', 'nemotron-3-super-free', 'qwen3.6-plus-free', 'minimax-m2.5-free'])
+    const freeModels = (data.data || []).filter(m => m.id.endsWith('-free') || freeIds.has(m.id))
+    res.json({ ...data, data: freeModels })
+  } catch (err) {
+    res.status(502).json({ error: err.message, checkedAt: new Date().toISOString() })
+  }
+})
+
+app.post('/v1/zen/chat/completions', requireAgentSecret, async (req, res) => {
+  trackOpenCodeZenRequest()
+  await proxyOpenCodeZenRelay(req, res)
+})
+
+app.get('/api/opencode-zen', requireAdmin, (_req, res) => {
+  res.json({ ok: true, ...getOpenCodeZenStatus(), checkedAt: new Date().toISOString() })
 })
 
 app.get('/api/machines', requireAdmin, (_req, res) => {

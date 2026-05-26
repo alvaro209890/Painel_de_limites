@@ -1,12 +1,13 @@
 import { MetricCard } from '../../components/MetricCard'
 import { SectionCard } from '../../components/SectionCard'
 import { StatusBadge } from '../../components/StatusBadge'
-import type { DeepSeekPayload, LimitsPayload, UsageInfo } from '../../types/dashboard'
+import type { DeepSeekPayload, LimitsPayload, OpenCodeZenStatus, UsageInfo } from '../../types/dashboard'
 import { formatDate, formatDuration, formatNumber, formatPercent } from '../../utils/format'
 
 type AiModuleProps = {
   limits: LimitsPayload | null
   deepseek: DeepSeekPayload | null
+  openCodeZen?: OpenCodeZenStatus | null
   loading?: boolean
   error?: string | null
 }
@@ -30,7 +31,7 @@ function LimitWindow({ usage, title }: { usage?: UsageInfo | null; title: string
   )
 }
 
-export function AiModule({ limits, deepseek, loading, error }: AiModuleProps) {
+export function AiModule({ limits, deepseek, openCodeZen, loading, error }: AiModuleProps) {
   if (loading) return <SectionCard title="IA"><p className="text-slate-400">Carregando provedores...</p></SectionCard>
   if (error) return <SectionCard title="IA"><p className="text-rose-200">{error}</p></SectionCard>
 
@@ -75,6 +76,19 @@ export function AiModule({ limits, deepseek, loading, error }: AiModuleProps) {
           {(!limits?.local.byModel?.length) && <p className="p-4 text-sm text-slate-400">Sem métricas locais ainda.</p>}
         </div>
       </SectionCard>
+      {openCodeZen !== undefined && (
+        <SectionCard title="OpenCode Zen (relay)" subtitle="Modelos gratuitos via servidor — rotação automática de IP">
+          <div className="grid gap-3 md:grid-cols-2">
+            <MetricCard label="Req/min" value={String(openCodeZen?.requestsPerMinute ?? 0)} tone="cyan" />
+            <MetricCard label="Total" value={formatNumber(openCodeZen?.totalRequests)} tone="default" />
+            <MetricCard label="429s" value={String(openCodeZen?.errors429 ?? 0)} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'good'} />
+            <MetricCard label="Último 429" value={openCodeZen?.lastRateLimitAt ? formatDate(openCodeZen.lastRateLimitAt) : '—'} tone={(openCodeZen?.errors429 ?? 0) > 0 ? 'warning' : 'default'} />
+          </div>
+          <p className="mt-4 text-xs text-slate-500">
+            Último request: {openCodeZen?.lastRequestAt ? formatDate(openCodeZen.lastRequestAt) : '—'}
+          </p>
+        </SectionCard>
+      )}
     </div>
   )
 }

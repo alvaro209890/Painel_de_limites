@@ -594,7 +594,7 @@ function App() {
 
   const moduleContent = (() => {
     if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} onRefresh={loadMachines} />
-    if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} loading={loadingDashboard} error={dashboardError} />
+    if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} openCodeZen={dashboard?.ai.openCodeZen ?? null} loading={loadingDashboard} error={dashboardError} />
     if (tab === 'codexAccounts') {
       return (
         <CodexAccountsModule

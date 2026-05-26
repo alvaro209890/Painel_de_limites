@@ -77,6 +77,14 @@ export type DeepSeekPayload = {
   balance: DeepSeekBalanceInfo
 }
 
+export type OpenCodeZenStatus = {
+  totalRequests: number
+  errors429: number
+  lastRateLimitAt: string | null
+  lastRequestAt: string | null
+  requestsPerMinute: number
+}
+
 export type CodexAdminStatus = {
   ok: boolean
   adminConfigured: boolean
@@ -202,6 +210,7 @@ export type DashboardOverviewPayload = {
   ai: {
     limits: LimitsPayload | null
     deepseek: DeepSeekPayload | null
+    openCodeZen: OpenCodeZenStatus | null
   }
   projects: ProjectService[]
   alerts: DashboardAlert[]
