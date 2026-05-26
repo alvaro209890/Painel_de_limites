@@ -173,16 +173,26 @@ export type DashboardMachine = {
   agents?: AgentInfo[] | null
 }
 
+export type OpenCodeZenStatus = {
+  totalRequests: number
+  requestsPerMinute: number
+  errors429: number
+  lastRateLimitAt: string | null
+  lastRequestAt: string | null
+  sourceStats?: Record<string, number>
+}
+
 export type ProjectService = {
   id: string
   name: string
-  kind: 'pm2' | 'http' | 'manual'
+  kind: 'pm2' | 'http' | 'manual' | 'systemd'
   status: 'online' | 'offline' | 'unknown'
   port?: number | null
   publicUrl?: string | null
   healthUrl?: string | null
   deployTarget?: string | null
   lastCheckedAt: string | null
+  stack?: string
 }
 
 export type DashboardAlert = {
@@ -202,6 +212,7 @@ export type DashboardOverviewPayload = {
   ai: {
     limits: LimitsPayload | null
     deepseek: DeepSeekPayload | null
+    openCodeZen?: OpenCodeZenStatus | null
   }
   projects: ProjectService[]
   alerts: DashboardAlert[]

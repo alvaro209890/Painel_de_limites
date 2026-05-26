@@ -20,18 +20,19 @@ export function ProjectsModule({ projects, loading, error }: ProjectsModuleProps
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-2xl font-black text-white">{project.name}</h2>
-              <p className="mt-1 text-sm text-slate-400">{project.deployTarget || project.kind}</p>
+              <p className="mt-1 text-sm font-medium text-indigo-300/80">{project.stack || 'Stack não informada'}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{project.deployTarget || project.kind}</p>
             </div>
             <StatusBadge status={project.status} />
           </div>
 
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-2xl bg-black/20 p-3">
-              <dt className="text-xs uppercase tracking-[0.16em] text-slate-500">Porta</dt>
-              <dd className="mt-1 font-bold text-slate-100">{project.port || '--'}</dd>
+              <dt className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Porta Interna</dt>
+              <dd className="mt-1 font-mono font-bold text-slate-100">{project.port || '--'}</dd>
             </div>
             <div className="rounded-2xl bg-black/20 p-3">
-              <dt className="text-xs uppercase tracking-[0.16em] text-slate-500">Tipo</dt>
+              <dt className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Gerenciador</dt>
               <dd className="mt-1 font-bold text-slate-100">{project.kind}</dd>
             </div>
           </dl>

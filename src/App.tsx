@@ -594,7 +594,7 @@ function App() {
 
   const moduleContent = (() => {
     if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} onRefresh={loadMachines} />
-    if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} loading={loadingDashboard} error={dashboardError} />
+    if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} openCodeZen={dashboard?.ai.openCodeZen || null} loading={loadingDashboard} error={dashboardError} />
     if (tab === 'codexAccounts') {
       return (
         <CodexAccountsModule
@@ -650,12 +650,13 @@ function App() {
             <header className="overflow-hidden rounded-[2rem] border border-white/10 bg-[#0f1011]/85 p-4 shadow-2xl shadow-black/30 backdrop-blur sm:p-6">
               <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                  <p className="mb-3 inline-flex rounded-full border border-indigo-300/20 bg-indigo-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-indigo-200">
-                    Runtime pessoal • agentes + máquinas
+                  <p className="mb-3 inline-flex rounded-full border border-indigo-300/20 bg-indigo-300/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.3em] text-indigo-200">
+                    Sovereign Runtime • Agentes + Infra
                   </p>
-                  <h1 className="max-w-5xl text-4xl font-semibold tracking-[-0.06em] text-white sm:text-6xl">Central de Agentes do Álvaro</h1>
-                  <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-400 sm:text-base">
-                    Uma visão atual de onde cada agente roda, quais contas de IA alimentam o trabalho e como o servidor e o notebook se dividem na operação.
+                  <h1 className="max-w-5xl text-4xl font-black tracking-[-0.06em] text-white sm:text-6xl">Infra Hub Álvaro</h1>
+                  <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-400 sm:text-base font-medium">
+                    Centro de comando e monitoramento em tempo real. Orquestração de proxies de IA, 
+                    backends distribuídos e telemetria de hardware para suporte a agentes autônomos.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
