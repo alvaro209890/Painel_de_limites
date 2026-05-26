@@ -108,3 +108,45 @@ No Acer:
 opencode models | grep gemini
 opencode run 'Responda exatamente: GEMINI_OK' --model limites-gemini/gemini-2.5-flash
 ```
+
+## Uso no Hermes do servidor
+
+O Hermes Gateway do PC `server-desktop` também pode mostrar os modelos Gemini no comando `/model` do Telegram quando houver um provider customizado apontando para o gateway do Painel:
+
+```yaml
+providers:
+  limites-gemini:
+    name: Limites Gemini
+    # No próprio server-desktop, usar localhost evita bloqueio do Cloudflare/WAF
+    # contra o cliente Python/OpenAI usado pelo Hermes Gateway.
+    # Em máquinas externas (ex.: Acer/OpenCode), usar https://limites.cursar.space/v1.
+    base_url: http://127.0.0.1:8787/v1
+    api_key: <secret de ~/.config/codex-profiles/gemini-agent-secret.json>
+    api_mode: openai
+    model: gemini-2.5-flash
+    models:
+      gemini-2.5-pro: {context_length: 1000000}
+      gemini-2.5-flash: {context_length: 1000000}
+      gemini-2.5-flash-lite: {context_length: 1000000}
+    discover_models: true
+```
+
+Observação: este Hermes tinha um filtro local no `hermes_cli/model_switch.py` que restringia o picker a `openai-codex` e `deepseek`. Para o `/model` listar Gemini, o filtro também precisa permitir `limites-gemini` e `custom:limites-gemini` com os três modelos Gemini acima. Depois de alterar config/código, reiniciar:
+
+```bash
+systemctl --user restart hermes-gateway.service
+```
+
+Verificação rápida sem expor o token:
+
+```bash
+cd ~/.hermes/hermes-agent
+python - <<PYCODE
+from hermes_cli.config import load_config, get_compatible_custom_providers
+from hermes_cli.model_switch import list_picker_providers
+cfg=load_config(); m=cfg.get("model", {})
+for p in list_picker_providers(current_provider=m.get("provider",""), current_base_url=m.get("base_url",""), current_model=m.get("default",""), user_providers=cfg.get("providers",{}), custom_providers=get_compatible_custom_providers(cfg), max_models=50):
+    print(p.get("slug"), p.get("models"))
+PYCODE
+```
+
