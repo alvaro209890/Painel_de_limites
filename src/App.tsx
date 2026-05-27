@@ -1,32 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { apiFetch } from './api/client'
 import { AlertsModule } from './modules/alerts/AlertsModule'
 import { AiModule } from './modules/ai/AiModule'
-import { CodexAccountsModule } from './modules/codex-accounts/CodexAccountsModule'
 import { MachinesModule } from './modules/machines/MachinesModule'
 import { ProjectsModule } from './modules/projects/ProjectsModule'
-import type { CodexAdminStatus, CodexLoginStatus, CodexProfilesPayload, CodexRotationPayload, DashboardOverviewPayload, GeminiLoginStatus, MachinesPayload } from './types/dashboard'
+import type { DashboardOverviewPayload, MachinesPayload } from './types/dashboard'
 import { formatDate } from './utils/format'
 
-type TabId = 'machines' | 'ai' | 'codexAccounts' | 'projects' | 'alerts'
+type TabId = 'machines' | 'ai' | 'projects' | 'alerts'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'machines', label: 'Máquinas', icon: '💻' },
   { id: 'ai', label: 'IA', icon: '🧠' },
-  { id: 'codexAccounts', label: 'Credenciais', icon: '🔐' },
   { id: 'projects', label: 'Projetos', icon: '🚀' },
   { id: 'alerts', label: 'Alertas', icon: '🚨' },
 ]
 
-function pct(value?: number | null) {
-  return typeof value === 'number' ? `${Math.round(value)}%` : '--'
-}
-
-function MachineSplitPanel({ dashboard, profilesTotal }: { dashboard: DashboardOverviewPayload | null; profilesTotal: number }) {
+function MachineSplitPanel({ dashboard }: { dashboard: DashboardOverviewPayload | null }) {
   const machines = dashboard?.machines || []
-  const hermesUsage = dashboard?.ai.limits?.hermesCodex?.usage
-  const codexUsage = dashboard?.ai.limits?.codexCli?.usage
   const deepSeekBalance = dashboard?.ai.deepseek?.balance.balance_infos?.[0]?.total_balance
 
   const machineCards = machines.map((machine) => {
@@ -91,16 +83,6 @@ function MachineSplitPanel({ dashboard, profilesTotal }: { dashboard: DashboardO
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Quota Codex Hermes</p>
-          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">{pct(hermesUsage?.windows.primary?.remainingPercent)}</p>
-          <p className="mt-1 text-sm text-slate-400">restante na janela principal • {profilesTotal} perfis salvos</p>
-        </div>
-        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">Codex CLI standalone</p>
-          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">{pct(codexUsage?.windows.primary?.remainingPercent)}</p>
-          <p className="mt-1 text-sm text-slate-400">conta local separada para uso manual quando necessário</p>
-        </div>
         <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4 sm:col-span-2 xl:col-span-1">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">DeepSeek API</p>
           <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">US$ {deepSeekBalance || '--'}</p>
@@ -138,8 +120,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (tab: TabId) =>
   )
 }
 
-function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }: {
-  status: CodexAdminStatus | null
+function LoginGate({ busy, error, password, onPasswordChange, onSubmit }: {
   busy: boolean
   error: string | null
   password: string
@@ -154,14 +135,8 @@ function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }
         </p>
         <h1 className="text-3xl font-black tracking-tight text-white">Central de Agentes e PCs</h1>
         <p className="mt-3 text-sm leading-6 text-slate-400">
-          Mapa privado de como Hermes, Codex, DeepSeek e os agents de heartbeat rodam entre o servidor e seus PCs. Entre como admin para ver limites, máquinas, projetos e alertas.
+          Mapa privado de como DeepSeek e os agents de heartbeat rodam entre o servidor e seus PCs. Entre como admin para ver limites, máquinas, projetos e alertas.
         </p>
-
-        {!status?.adminConfigured && (
-          <div className="mt-5 rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4 text-sm text-amber-100">
-            Senha admin não configurada no servidor. Configure `LIMITS_PANEL_ADMIN_PASSWORD` ou o arquivo admin-secret.json.
-          </div>
-        )}
 
         <form className="mt-6 space-y-4" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
           <label className="block">
@@ -172,14 +147,14 @@ function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }
               onChange={(event) => onPasswordChange(event.target.value)}
               type="password"
               placeholder="Digite a senha"
-              disabled={busy || !status?.adminConfigured}
+              disabled={busy}
             />
           </label>
           {error && <p className="rounded-2xl border border-rose-300/20 bg-rose-400/10 p-3 text-sm text-rose-100">{error}</p>}
           <button
             className="w-full rounded-2xl bg-indigo-400 px-5 py-3 font-semibold text-white transition hover:bg-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
             type="submit"
-            disabled={busy || !password.trim() || !status?.adminConfigured}
+            disabled={busy || !password.trim()}
           >
             {busy ? 'Entrando...' : 'Entrar como admin'}
           </button>
@@ -191,33 +166,20 @@ function LoginGate({ status, busy, error, password, onPasswordChange, onSubmit }
 
 function App() {
   const [tab, setTab] = useState<TabId>('machines')
-  const [adminStatus, setAdminStatus] = useState<CodexAdminStatus | null>(null)
+  const [authenticated, setAuthenticated] = useState(false)
   const [dashboard, setDashboard] = useState<DashboardOverviewPayload | null>(null)
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState<string | null>(null)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
-  const [profilesData, setProfilesData] = useState<CodexProfilesPayload | null>(null)
-  const [codexLogin, setCodexLogin] = useState<CodexLoginStatus | null>(null)
-  const [geminiLogin, setGeminiLogin] = useState<GeminiLoginStatus | null>(null)
-  const [geminiAuthCode, setGeminiAuthCode] = useState('')
-  const [codexRotation, setCodexRotation] = useState<CodexRotationPayload | null>(null)
-  const [profilesError, setProfilesError] = useState<string | null>(null)
-  const [rotationError, setRotationError] = useState<string | null>(null)
-  const [newProfileName, setNewProfileName] = useState('')
-  const [profilesBusy, setProfilesBusy] = useState(false)
   const [loadingStatus, setLoadingStatus] = useState(true)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [busy, setBusy] = useState(false)
-  const codexLoginPopupRef = useRef<Window | null>(null)
-  const geminiLoginPopupRef = useRef<Window | null>(null)
-
-  const authenticated = Boolean(adminStatus?.authenticated)
 
   const loadAdminStatus = useCallback(async () => {
     try {
       setAuthError(null)
-      const payload = await apiFetch<CodexAdminStatus>('/api/codex-profiles/status')
-      setAdminStatus(payload)
+      const payload = await apiFetch<{ authenticated: boolean }>('/api/admin/status')
+      setAuthenticated(payload.authenticated)
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Erro ao verificar sessão')
     } finally {
@@ -249,275 +211,11 @@ function App() {
     }
   }, [authenticated, tab])
 
-  const openCodexLoginUrlIfReady = useCallback((status: CodexLoginStatus | null) => {
-    if (!status?.loginUrl) return
-    const popup = codexLoginPopupRef.current
-    if (popup && !popup.closed && popup.location.href !== status.loginUrl) popup.location.href = status.loginUrl
-  }, [])
-
-  const openGeminiLoginUrlIfReady = useCallback((status: GeminiLoginStatus | null) => {
-    if (!status?.loginUrl) return
-    const popup = geminiLoginPopupRef.current
-    if (popup && !popup.closed && popup.location.href !== status.loginUrl) popup.location.href = status.loginUrl
-  }, [])
-
-  const loadCodexProfiles = useCallback(async () => {
-    if (!authenticated) return
-    try {
-      setProfilesError(null)
-      const payload = await apiFetch<CodexProfilesPayload>('/api/codex-profiles')
-      setProfilesData(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao carregar perfis Codex')
-    }
-  }, [authenticated])
-
-  const prevLoginRunningRef = useRef(false)
-
-  const autoSaveAndActivate = useCallback(async () => {
-    try {
-      const payload = await apiFetch<CodexProfilesPayload>('/api/codex-login/auto-save', { method: 'POST' })
-      setProfilesData(payload)
-      setProfilesError(null)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao salvar conta automaticamente')
-    }
-  }, [])
-
-  const loadCodexLoginStatus = useCallback(async () => {
-    if (!authenticated) return
-    try {
-      const payload = await apiFetch<CodexLoginStatus>('/api/codex-login/status')
-      setCodexLogin(payload)
-      openCodexLoginUrlIfReady(payload)
-      // Login completou (antes running, agora não) → salva+ativa automaticamente
-      if (prevLoginRunningRef.current && !payload.running && payload.exitCode === 0) {
-        void autoSaveAndActivate()
-      }
-      prevLoginRunningRef.current = payload.running
-    } catch {
-      // Ignora falha pontual; status de login é auxiliar.
-    }
-  }, [authenticated, openCodexLoginUrlIfReady, autoSaveAndActivate])
-
-  const loadGeminiLoginStatus = useCallback(async () => {
-    if (!authenticated) return
-    try {
-      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/status')
-      setGeminiLogin(payload)
-      openGeminiLoginUrlIfReady(payload)
-      if (!payload.running && payload.exitCode === 0) setGeminiAuthCode('')
-    } catch {
-      // Ignora falha pontual; status de login é auxiliar.
-    }
-  }, [authenticated, openGeminiLoginUrlIfReady])
-
-  const loadCodexRotation = useCallback(async () => {
-    if (!authenticated) return
-    try {
-      setRotationError(null)
-      const payload = await apiFetch<CodexRotationPayload>('/api/codex-rotation')
-      setCodexRotation(payload)
-    } catch (error) {
-      setRotationError(error instanceof Error ? error.message : 'Erro ao carregar rotação Codex')
-    }
-  }, [authenticated])
-
-  const refreshCodexAccounts = useCallback(() => {
-    void loadCodexProfiles()
-    void loadCodexLoginStatus()
-    void loadGeminiLoginStatus()
-    void loadCodexRotation()
-  }, [loadCodexLoginStatus, loadCodexProfiles, loadCodexRotation, loadGeminiLoginStatus])
-
-  const saveCurrentCodexProfile = useCallback(async () => {
-    const name = newProfileName.trim()
-    if (!name) {
-      setProfilesError('Informe um nome para o perfil.')
-      return
-    }
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      const payload = await apiFetch<CodexProfilesPayload>('/api/codex-profiles/save-current', {
-        method: 'POST',
-        body: JSON.stringify({ name }),
-      })
-      setProfilesData(payload)
-      setNewProfileName('')
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao salvar perfil')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [newProfileName])
-
-  const activateCodexProfile = useCallback(async (slug: string) => {
-    if (!window.confirm('Ativar este perfil vai substituir a credencial OpenAI Codex do Hermes em ~/.hermes/auth.json, com backup. Continuar?')) return
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      const payload = await apiFetch<CodexProfilesPayload>(`/api/codex-profiles/${slug}/activate`, { method: 'POST' })
-      setProfilesData(payload)
-      await loadDashboard()
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao ativar perfil')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [loadDashboard])
-
-  const deleteCodexProfile = useCallback(async (slug: string) => {
-    if (!window.confirm('Excluir este perfil salvo? A conta ativa não será removida.')) return
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      const payload = await apiFetch<CodexProfilesPayload>(`/api/codex-profiles/${slug}`, { method: 'DELETE' })
-      setProfilesData(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao excluir perfil')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [])
-
-  const prepareCodexLoginPopup = useCallback(() => {
-    const popup = window.open('', 'codex-login', 'width=820,height=900,toolbar=yes,scrollbars=yes')
-    codexLoginPopupRef.current = popup
-    if (!popup) {
-      setProfilesError('O navegador bloqueou a janela de login. Libere pop-ups ou use o link que aparecer no painel.')
-      return
-    }
-    popup.document.write('<!doctype html><html><head><title>Login Codex</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:540px;padding:32px;text-align:center"><h1 style="color:white">Login Codex</h1><p>Aguardando URL de login do servidor...</p><p style="margin-top:24px;padding:16px;border:1px solid #334155;border-radius:12px;background:#1e293b;font-size:13px;line-height:1.6"><strong style="color:#fbbf24">⚠️ Importante:</strong><br>Para logar em uma conta DIFERENTE, copie o link abaixo e abra em uma <strong style="color:#67e8f9">janela anônima/privada</strong> (Ctrl+Shift+N).<br><br>Assim você pode fazer login com outra conta do ChatGPT sem interferir na sua sessão atual.</p></main></body></html>')
-    popup.document.close()
-  }, [])
-
-  const startCodexLogin = useCallback(async () => {
-    prepareCodexLoginPopup()
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      const payload = await apiFetch<CodexLoginStatus>('/api/codex-login/start', { method: 'POST' })
-      setCodexLogin(payload)
-      openCodexLoginUrlIfReady(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao iniciar login Codex')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [openCodexLoginUrlIfReady, prepareCodexLoginPopup])
-
-  const cancelCodexLogin = useCallback(async () => {
-    try {
-      setProfilesBusy(true)
-      const payload = await apiFetch<CodexLoginStatus>('/api/codex-login/cancel', { method: 'POST' })
-      setCodexLogin(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao cancelar login Codex')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [])
-
-  const prepareGeminiLoginPopup = useCallback(() => {
-    const popup = window.open('', 'gemini-login', 'width=900,height=900,toolbar=yes,scrollbars=yes')
-    geminiLoginPopupRef.current = popup
-    if (!popup) {
-      setProfilesError('O navegador bloqueou a janela de login Gemini. Libere pop-ups ou use o link que aparecer no painel.')
-      return
-    }
-    popup.document.write('<!doctype html><html><head><title>Login Gemini CLI</title></head><body style="margin:0;background:#080a0f;color:#e2e8f0;font-family:system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:600px;padding:32px;text-align:center"><h1 style="color:white">Login Gemini CLI</h1><p>Aguardando URL de login do Google...</p><p style="margin-top:24px;padding:16px;border:1px solid #334155;border-radius:12px;background:#1e293b;font-size:13px;line-height:1.6"><strong style="color:#fbbf24">⚠️ Importante:</strong><br>Depois de autorizar no Google, copie o código exibido e cole no campo <strong style="color:#67e8f9">Código Gemini</strong> no Painel de Limites.</p></main></body></html>')
-    popup.document.close()
-  }, [])
-
-  const startGeminiLogin = useCallback(async () => {
-    prepareGeminiLoginPopup()
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      setGeminiAuthCode('')
-      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/start', { method: 'POST' })
-      setGeminiLogin(payload)
-      openGeminiLoginUrlIfReady(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao iniciar login Gemini')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [openGeminiLoginUrlIfReady, prepareGeminiLoginPopup])
-
-  const submitGeminiLoginCode = useCallback(async () => {
-    const code = geminiAuthCode.trim()
-    if (!code) {
-      setProfilesError('Cole o código de autorização do Google para concluir o login Gemini.')
-      return
-    }
-    try {
-      setProfilesBusy(true)
-      setProfilesError(null)
-      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/submit-code', {
-        method: 'POST',
-        body: JSON.stringify({ code }),
-      })
-      setGeminiLogin(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao enviar código Gemini')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [geminiAuthCode])
-
-  const cancelGeminiLogin = useCallback(async () => {
-    try {
-      setProfilesBusy(true)
-      const payload = await apiFetch<GeminiLoginStatus>('/api/gemini-login/cancel', { method: 'POST' })
-      setGeminiLogin(payload)
-    } catch (error) {
-      setProfilesError(error instanceof Error ? error.message : 'Erro ao cancelar login Gemini')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [])
-
-  const updateCodexRotationConfig = useCallback(async (config: Partial<CodexRotationPayload['config']>) => {
-    try {
-      setProfilesBusy(true)
-      setRotationError(null)
-      const payload = await apiFetch<CodexRotationPayload>('/api/codex-rotation/config', {
-        method: 'POST',
-        body: JSON.stringify(config),
-      })
-      setCodexRotation(payload)
-    } catch (error) {
-      setRotationError(error instanceof Error ? error.message : 'Erro ao atualizar rotação')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [])
-
-  const runCodexRotation = useCallback(async (dryRun: boolean) => {
-    try {
-      setProfilesBusy(true)
-      setRotationError(null)
-      const payload = await apiFetch<CodexRotationPayload>('/api/codex-rotation/run-once', {
-        method: 'POST',
-        body: JSON.stringify({ force: true, dryRun, reason: dryRun ? 'teste_manual' : 'execucao_manual' }),
-      })
-      setCodexRotation(payload)
-      await loadCodexProfiles()
-      await loadDashboard()
-    } catch (error) {
-      setRotationError(error instanceof Error ? error.message : 'Erro ao executar rotação')
-    } finally {
-      setProfilesBusy(false)
-    }
-  }, [loadCodexProfiles, loadDashboard])
-
   async function login() {
     try {
       setBusy(true)
       setAuthError(null)
-      await apiFetch<{ ok: boolean }>('/api/codex-profiles/login', {
+      await apiFetch<{ ok: boolean }>('/api/admin/login', {
         method: 'POST',
         body: JSON.stringify({ password }),
       })
@@ -533,15 +231,10 @@ function App() {
   async function logout() {
     try {
       setBusy(true)
-      await apiFetch<{ ok: boolean }>('/api/codex-profiles/logout', { method: 'POST' })
+      await apiFetch<{ ok: boolean }>('/api/admin/logout', { method: 'POST' })
     } finally {
       setDashboard(null)
-      setProfilesData(null)
-      setCodexLogin(null)
-      setGeminiLogin(null)
-      setGeminiAuthCode('')
-      setCodexRotation(null)
-      setAdminStatus((current) => current ? { ...current, authenticated: false } : current)
+      setAuthenticated(false)
       setBusy(false)
     }
   }
@@ -562,20 +255,6 @@ function App() {
   }, [authenticated, loadDashboard])
 
   useEffect(() => {
-    if (!authenticated) return
-    const timer = window.setTimeout(() => refreshCodexAccounts(), 0)
-    return () => window.clearTimeout(timer)
-  }, [authenticated, refreshCodexAccounts])
-
-  useEffect(() => {
-    if (!authenticated || tab !== 'codexAccounts') return
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') { void loadCodexLoginStatus(); void loadGeminiLoginStatus() }
-    }, 2_000)
-    return () => window.clearInterval(interval)
-  }, [authenticated, loadCodexLoginStatus, loadGeminiLoginStatus, tab])
-
-  useEffect(() => {
     if (!authenticated || tab !== 'machines') return
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void loadMachines()
@@ -589,44 +268,11 @@ function App() {
     projectsOnline: dashboard?.projects.filter((project) => project.status === 'online').length || 0,
     projectsTotal: dashboard?.projects.length || 0,
     criticalAlerts: dashboard?.alerts.filter((alert) => alert.severity === 'critical').length || 0,
-    profilesTotal: profilesData?.profiles.length || 0,
-  }), [dashboard, profilesData])
+  }), [dashboard])
 
   const moduleContent = (() => {
     if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} onRefresh={loadMachines} />
-    if (tab === 'ai') return <AiModule limits={dashboard?.ai.limits || null} deepseek={dashboard?.ai.deepseek || null} openCodeZen={dashboard?.ai.openCodeZen ?? null} loading={loadingDashboard} error={dashboardError} />
-    if (tab === 'codexAccounts') {
-      return (
-        <CodexAccountsModule
-          admin={adminStatus}
-          profilesData={profilesData}
-          deepseek={dashboard?.ai.deepseek || null}
-          openCodeZen={dashboard?.ai.openCodeZen ?? null}
-          hermesCodex={dashboard?.ai.limits?.hermesCodex || null}
-          loginStatus={codexLogin}
-          geminiLoginStatus={geminiLogin}
-          geminiAuthCode={geminiAuthCode}
-          rotationStatus={codexRotation}
-          error={profilesError}
-          rotationError={rotationError}
-          newProfileName={newProfileName}
-          busy={profilesBusy}
-          onNewProfileNameChange={setNewProfileName}
-          onSaveCurrent={saveCurrentCodexProfile}
-          onActivate={activateCodexProfile}
-          onDelete={deleteCodexProfile}
-          onStartLogin={startCodexLogin}
-          onCancelLogin={cancelCodexLogin}
-          onStartGeminiLogin={startGeminiLogin}
-          onCancelGeminiLogin={cancelGeminiLogin}
-          onGeminiAuthCodeChange={setGeminiAuthCode}
-          onSubmitGeminiCode={submitGeminiLoginCode}
-          onUpdateRotation={updateCodexRotationConfig}
-          onRunRotation={runCodexRotation}
-          onRefresh={refreshCodexAccounts}
-        />
-      )
-    }
+    if (tab === 'ai') return <AiModule deepseek={dashboard?.ai.deepseek || null} loading={loadingDashboard} error={dashboardError} />
     if (tab === 'projects') return <ProjectsModule projects={dashboard?.projects || []} loading={loadingDashboard} error={dashboardError} />
     return <AlertsModule alerts={dashboard?.alerts || []} loading={loadingDashboard} error={dashboardError} />
   })()
@@ -640,7 +286,6 @@ function App() {
           <div className="py-20 text-center text-slate-400">Verificando sessão...</div>
         ) : !authenticated ? (
           <LoginGate
-            status={adminStatus}
             busy={busy}
             error={authError}
             password={password}
@@ -653,12 +298,11 @@ function App() {
               <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
                 <div>
                   <p className="mb-3 inline-flex rounded-full border border-indigo-300/20 bg-indigo-300/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.3em] text-indigo-200">
-                    Sovereign Runtime • Agentes + Infra
+                    Sovereign Runtime • Infra
                   </p>
                   <h1 className="max-w-5xl text-4xl font-black tracking-[-0.06em] text-white sm:text-6xl">Infra Hub Álvaro</h1>
                   <p className="mt-4 max-w-3xl text-sm leading-7 text-slate-400 sm:text-base font-medium">
-                    Centro de comando e monitoramento em tempo real. Orquestração de proxies de IA, 
-                    backends distribuídos e telemetria de hardware para suporte a agentes autônomos.
+                    Centro de comando e monitoramento em tempo real. Orquestração de backends distribuídos e telemetria de hardware para suporte a agentes autônomos.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -671,16 +315,15 @@ function App() {
                 </div>
               </div>
 
-              <div className="mt-7 grid gap-3 md:grid-cols-5">
+              <div className="mt-7 grid gap-3 md:grid-cols-4">
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">PCs online</p><p className="mt-1 text-xl font-semibold">{counts.machinesOnline}/{counts.machinesTotal}</p></div>
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Perfis salvos</p><p className="mt-1 text-xl font-semibold">{counts.profilesTotal}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Projetos servidos</p><p className="mt-1 text-xl font-semibold">{counts.projectsOnline}/{counts.projectsTotal}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Críticos</p><p className="mt-1 text-xl font-semibold text-rose-100">{counts.criticalAlerts}</p></div>
                 <div className="rounded-2xl border border-white/10 bg-black/25 p-3"><p className="text-xs uppercase tracking-[0.16em] text-slate-500">Atualizado</p><p className="mt-1 text-sm font-semibold">{formatDate(dashboard?.checkedAt)}</p></div>
               </div>
             </header>
 
-            <MachineSplitPanel dashboard={dashboard} profilesTotal={counts.profilesTotal} />
+            <MachineSplitPanel dashboard={dashboard} />
             <TabBar active={tab} onChange={setTab} />
             {moduleContent}
           </>

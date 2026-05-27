@@ -1,52 +1,3 @@
-export type WindowInfo = {
-  label: string
-  usedPercent: number
-  remainingPercent: number
-  windowSeconds: number
-  resetAfterSeconds: number
-  resetAt: string
-  elapsedSeconds: number
-}
-
-export type UsageInfo = {
-  checkedAt: string
-  account: { email: string | null; planType: string | null; userId: string | null }
-  status: { allowed: boolean; limitReached: boolean; reachedType: string | null }
-  windows: { primary: WindowInfo | null; secondary: WindowInfo | null }
-  credits: {
-    has_credits: boolean
-    unlimited: boolean
-    balance: string
-    overage_limit_reached: boolean
-    approx_local_messages?: [number, number]
-    approx_cloud_messages?: [number, number]
-  } | null
-}
-
-export type HermesCodexPayload = {
-  ok: boolean
-  usage?: UsageInfo
-  credentialLabel?: string | null
-  error?: string
-}
-
-export type CodexCliPayload = {
-  ok: boolean
-  usage?: UsageInfo
-  error?: string
-}
-
-export type LimitsPayload = {
-  usage: UsageInfo | null
-  hermesCodex?: HermesCodexPayload
-  codexCli?: CodexCliPayload
-  local: {
-    totals: { threads: number; tokens: number; last_used: number | null }
-    byModel: Array<{ model: string; provider: string; threads: number; tokens: number; last_used: number }>
-    recentThreads: Array<{ title: string; model: string; provider: string; cwd: string; tokens_used: number; updated_at: number }>
-  }
-}
-
 export type PcMetricsPayload = {
   ok: boolean
   checkedAt: string
@@ -77,65 +28,6 @@ export type DeepSeekPayload = {
   balance: DeepSeekBalanceInfo
 }
 
-export type ZenSourceStat = {
-  count: number
-  lastAt: string | null
-  machineName: string
-}
-
-export type OpenCodeZenStatus = {
-  totalRequests: number
-  errors429: number
-  lastRateLimitAt: string | null
-  lastRequestAt: string | null
-  requestsPerMinute: number
-  sourceStats: Record<string, ZenSourceStat>
-  upstreamOk: boolean
-  upstreamError: string | null
-  // Fallback fields
-  fallbackActive: boolean
-  fallbackIp: string | null
-  fallbackAt: string | null
-  fallbackAttempts: number
-  fallbackRecoveries: number
-  acerProxyOnline: boolean
-}
-
-export type CodexAdminStatus = {
-  ok: boolean
-  adminConfigured: boolean
-  authenticated: boolean
-}
-
-export type CodexProfile = {
-  slug: string
-  name: string
-  emailHint: string | null
-  planType: string | null
-  accountIdHint: string | null
-  createdAt: string | null
-  updatedAt: string | null
-  lastActivatedAt: string | null
-  isActive: boolean
-  usage?: {
-    ok: boolean
-    allowed: boolean | null
-    limitReached: boolean | null
-    reachedType: string | null
-    primary: WindowInfo | null
-    secondary: WindowInfo | null
-    checkedAt: string
-    error?: string
-  } | null
-}
-
-export type CodexProfilesPayload = {
-  ok: boolean
-  active: { exists: boolean; email: string | null; planType: string | null; accountIdHint: string | null; updatedAt: string | null }
-  profiles: CodexProfile[]
-  checkedAt?: string
-}
-
 export type CliLoginStatus = {
   ok: boolean
   sessionId?: string
@@ -155,27 +47,7 @@ export type CliLoginStatus = {
   error: string | null
 }
 
-export type CodexLoginStatus = CliLoginStatus
 export type GeminiLoginStatus = CliLoginStatus
-
-export type CodexRotationPayload = {
-  ok: boolean
-  config: {
-    enabled: boolean
-    intervalSeconds: number
-    cooldownSeconds: number
-    thresholdUsedPercent: number
-    notifyOnly: boolean
-    preferredOrder: string[]
-    skipSlugs: string[]
-    updatedAt?: string | null
-  }
-  running: boolean
-  scheduled: boolean
-  lastRunAt: string | null
-  lastResult: unknown
-  events: Array<Record<string, unknown>>
-}
 
 export type MachineStatus = 'online' | 'offline' | 'unknown'
 
@@ -196,7 +68,6 @@ export type DashboardMachine = {
   agent?: boolean
   agents?: AgentInfo[] | null
 }
-
 
 export type ProjectService = {
   id: string
@@ -226,9 +97,14 @@ export type DashboardOverviewPayload = {
   checkedAt: string
   machines: DashboardMachine[]
   ai: {
-    limits: LimitsPayload | null
     deepseek: DeepSeekPayload | null
-    openCodeZen?: OpenCodeZenStatus | null
+    gemini?: {
+      exists: boolean
+      email: string | null
+      hasRefreshToken: boolean
+      oauthExpiresAt: string | null
+      oauthExpired: boolean | null
+    } | null
   }
   projects: ProjectService[]
   alerts: DashboardAlert[]

@@ -25,7 +25,7 @@ function machineRoleLabel(role: DashboardMachine['role']) {
 }
 
 function machineMission(machine: DashboardMachine) {
-  if (machine.role === 'server') return 'Hospeda Hermes Gateway, túneis, APIs, PM2, Docker e serviços que precisam ficar ligados.'
+  if (machine.role === 'server') return 'Hospeda túneis, APIs, PM2, Docker e serviços DevOps que precisam ficar ligados.'
   if (machine.role === 'work') return 'Notebook de uso diário: envia telemetria, opera arquivos/projetos e serve como posto de comando.'
   return machine.notes || 'Máquina monitorada pelo painel.'
 }
