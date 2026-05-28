@@ -61,19 +61,15 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
         const currentRam = m.metrics.memory.usedPercent
 
         const h = globalHistory[key]
-        // Avoid duplicates on fast component re-renders
-        const lastCpu = h.cpu[h.cpu.length - 1]
-        const lastRam = h.ram[h.ram.length - 1]
         
-        if (lastCpu !== currentCpu || lastRam !== currentRam || h.cpu.length === 0) {
-          h.cpu.push(currentCpu)
-          h.ram.push(currentRam)
+        // Push the values on every tick (even if unchanged) to keep the timeline advancing.
+        // We limit to 15 ticks to show a moving chart.
+        h.cpu.push(currentCpu)
+        h.ram.push(currentRam)
 
-          // Limit history to 15 ticks
-          if (h.cpu.length > 15) h.cpu.shift()
-          if (h.ram.length > 15) h.ram.shift()
-          updated = true
-        }
+        if (h.cpu.length > 15) h.cpu.shift()
+        if (h.ram.length > 15) h.ram.shift()
+        updated = true
       }
     })
 

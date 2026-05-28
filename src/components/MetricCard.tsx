@@ -25,16 +25,29 @@ const neonGlowColor: Record<NonNullable<MetricCardProps['tone']>, string> = {
 export function MetricCard({ label, value, hint, tone = 'default', history = [] }: MetricCardProps) {
   // Generate SVG path for neon historical chart
   const sparklineSvg = (() => {
-    if (!history || history.length < 2) return null
+    // We always want to render the graph box if history is supported for the metric (i.e. we pass a history prop)
+    if (!history) return null
     
     const width = 120
     const height = 28
     const padding = 2
     
-    const maxVal = Math.max(...history, 1)
-    const points = history.map((val, index) => {
-      const x = padding + (index / (history.length - 1)) * (width - padding * 2)
-      const y = height - padding - (val / maxVal) * (height - padding * 2)
+    // Ensure we have at least 2 points to draw a polyline. If not, fallback to a flat placeholder line.
+    const displayHistory = history.length >= 2 ? history : [Number(value) || 0, Number(value) || 0]
+    
+    // Scale helper: to avoid dividing by 0 or flat lines lying exactly at the top/bottom
+    const minVal = Math.min(...displayHistory)
+    const maxVal = Math.max(...displayHistory)
+    const range = maxVal - minVal
+    
+    const points = displayHistory.map((val, index) => {
+      const x = padding + (index / (displayHistory.length - 1)) * (width - padding * 2)
+      
+      // If it's a flat line, center it vertically in the height box
+      let y = height / 2
+      if (range > 0) {
+        y = height - padding - ((val - minVal) / range) * (height - padding * 2)
+      }
       return `${x},${y}`
     }).join(' ')
 
@@ -45,7 +58,7 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
         <svg className="overflow-visible" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
           <defs>
             <filter id={`neon-glow-${tone}`} x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="2.5" result="blur" />
+              <feGaussianBlur stdDeviation="1.8" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
                 <feMergeNode in="SourceGraphic" />
