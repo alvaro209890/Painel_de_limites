@@ -98,13 +98,6 @@ export type DashboardOverviewPayload = {
   machines: DashboardMachine[]
   ai: {
     deepseek: DeepSeekPayload | null
-    gemini?: {
-      exists: boolean
-      email: string | null
-      hasRefreshToken: boolean
-      oauthExpiresAt: string | null
-      oauthExpired: boolean | null
-    } | null
   }
   projects: ProjectService[]
   alerts: DashboardAlert[]

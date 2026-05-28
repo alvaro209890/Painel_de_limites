@@ -4,24 +4,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
+import Database from 'better-sqlite3'
 
 const app = express()
 app.use(express.json({ limit: '2mb' }))
 const API_PORT = Number(process.env.LIMITS_PANEL_PORT || 8787)
 const SITE_PORT = Number(process.env.LIMITS_PANEL_SITE_PORT || 4173)
-const GEMINI_DIR = path.join(os.homedir(), '.gemini')
-const GEMINI_OAUTH_PATH = path.join(GEMINI_DIR, 'oauth_creds.json')
-const GEMINI_ACCOUNTS_PATH = path.join(GEMINI_DIR, 'google_accounts.json')
-const GEMINI_SETTINGS_PATH = path.join(GEMINI_DIR, 'settings.json')
 const DIST_DIR = path.join(process.cwd(), 'dist')
 const MACHINES_CONFIG_FILE = path.join(process.cwd(), 'config', 'machines.json')
 const PROJECTS_CONFIG_FILE = path.join(process.cwd(), 'config', 'projects.json')
 const ADMIN_SECRET_FILE = path.join(process.cwd(), 'config', 'admin-secret.json')
 const AGENTS_DATA_FILE = path.join(process.cwd(), 'data', 'agent-heartbeats.json')
 const PANEL_SECRETS_DIR = path.join(process.cwd(), 'config')
-const GEMINI_BACKUPS_DIR = path.join(process.cwd(), 'data', 'gemini-backups')
 const AGENT_SECRET = process.env.LIMITS_PANEL_AGENT_SECRET || ''
-const GEMINI_AGENT_SECRET = process.env.LIMITS_PANEL_GEMINI_AGENT_SECRET || readPanelSecretFile('gemini-agent-secret.json') || ''
 const AGENT_HEARTBEAT_TTL_MS = (Number(process.env.LIMITS_PANEL_AGENT_TTL_MS) || 120_000)
 const ADMIN_PASSWORD = process.env.LIMITS_PANEL_ADMIN_PASSWORD || readAdminPasswordFromFile()
 const ADMIN_SESSION_SECRET = process.env.LIMITS_PANEL_SESSION_SECRET || readAdminSessionSecretFromFile() || crypto.randomBytes(32).toString('hex')
@@ -170,198 +165,6 @@ function extractLoginUrl(output) {
 
 function extractUserCode(output) {
   return String(output || '').match(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b/)?.[0] || null
-}
-
-function geminiCliPathEnv() {
-  const candidates = [
-    '/home/server/.nvm/versions/node/v20.20.0/bin',
-    '/home/server/.nvm/versions/node/v22.22.2/bin',
-    path.join(os.homedir(), '.npm-global', 'bin'),
-  ]
-  const current = process.env.PATH || '/usr/bin:/bin'
-  return [...candidates.filter((dir) => fs.existsSync(dir)), current].join(':')
-}
-
-function buildGeminiCliEnv(homeDir, options = {}) {
-  const env = {
-    ...process.env,
-    HOME: homeDir,
-    PATH: geminiCliPathEnv(),
-    TERM: process.env.TERM || 'xterm-256color',
-    NO_COLOR: '1',
-    GEMINI_CLI_TRUST_WORKSPACE: 'true',
-  }
-  if (options.noBrowser) env.NO_BROWSER = 'true'
-  for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA', 'GOOGLE_CLOUD_PROJECT']) delete env[key]
-  return env
-}
-
-function ensureGeminiSettingsForOAuth(baseDir) {
-  const geminiDir = path.join(baseDir, '.gemini')
-  const settingsPath = path.join(geminiDir, 'settings.json')
-  ensureSecureDir(geminiDir)
-  const current = readJson(settingsPath) || {}
-  current.security = current.security || {}
-  current.security.auth = current.security.auth || {}
-  current.security.auth.selectedType = 'oauth-personal'
-  current.security.folderTrust = current.security.folderTrust || { enabled: false }
-  atomicWriteJson(settingsPath, current)
-}
-
-function backupGeminiCliAuth() {
-  ensureSecureDir(GEMINI_BACKUPS_DIR)
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const dir = path.join(GEMINI_BACKUPS_DIR, `gemini-cli-auth-${stamp}`)
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const file of [GEMINI_OAUTH_PATH, GEMINI_ACCOUNTS_PATH, GEMINI_SETTINGS_PATH]) {
-    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(dir, path.basename(file)))
-  }
-  return dir
-}
-
-function readGeminiAccountEmail() {
-  const accounts = readJson(GEMINI_ACCOUNTS_PATH)
-  return accounts?.active || null
-}
-
-function readGeminiOAuthSummary() {
-  const oauth = readJson(GEMINI_OAUTH_PATH)
-  const expiryMs = Number(oauth?.expiry_date || 0)
-  return {
-    authExists: fs.existsSync(GEMINI_OAUTH_PATH),
-    hasRefreshToken: Boolean(oauth?.refresh_token),
-    oauthExpiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
-    oauthExpired: expiryMs ? expiryMs <= Date.now() : null,
-  }
-}
-
-let geminiLoginSession = null
-
-function geminiLoginStatusPayload() {
-  const session = geminiLoginSession
-  const oauth = readGeminiOAuthSummary()
-  const activeEmail = readGeminiAccountEmail()
-  if (!session) {
-    return { ok: true, running: false, exitCode: null, loginUrl: null, userCode: null, outputTail: '', ...oauth, activeEmail, needsCode: false, error: null }
-  }
-  const outputTail = sanitizeLoginOutput(session.output).slice(-4000)
-  const rawOutput = session.output.slice(-2000)
-  const url = session.loginUrl || extractLoginUrl(outputTail)
-  return {
-    ok: true,
-    sessionId: session.id,
-    startedAt: session.startedAt,
-    command: session.command,
-    running: Boolean(session.child && session.exitCode === null && !session.error),
-    exitCode: session.exitCode,
-    loginUrl: url,
-    userCode: extractUserCode(outputTail),
-    outputTail,
-    ...oauth,
-    activeEmail,
-    needsCode: /Enter the authorization code/i.test(rawOutput),
-    error: session.error,
-  }
-}
-
-function startGeminiLoginProcess() {
-  if (geminiLoginSession?.child && geminiLoginSession.exitCode === null && !geminiLoginSession.error) {
-    const err = new Error('Ja existe um login Gemini em andamento')
-    err.statusCode = 409
-    throw err
-  }
-  const loginHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-cli-login-'))
-  ensureGeminiSettingsForOAuth(loginHome)
-  const spawnEnv = buildGeminiCliEnv(loginHome, { noBrowser: true })
-  const geminiCommand = 'gemini -p "Login Gemini CLI concluido. Responda somente: OK" --model gemini-2.5-flash --output-format json --skip-trust'
-  const scriptArgs = ['-q', '-c', geminiCommand, '/dev/null']
-  const child = spawn('script', scriptArgs, {
-    env: spawnEnv,
-    cwd: loginHome,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
-  const session = {
-    id: crypto.randomUUID(),
-    startedAt: new Date().toISOString(),
-    command: `NO_BROWSER=true script ${scriptArgs.join(' ')}`,
-    loginHome,
-    backupPath: null,
-    child,
-    output: '',
-    loginUrl: null,
-    exitCode: null,
-    error: null,
-  }
-  geminiLoginSession = session
-  const append = (chunk) => {
-    const text = chunk.toString()
-    session.output = `${session.output}${text}`.slice(-12000)
-    // Capture OAuth URL from Gemini output
-    if (/Enter the authorization code/i.test(text) && !session.loginUrl) {
-      const urlMatch = sanitizeLoginOutput(session.output).match(/https?:\/\/accounts\.google\.com[^\s,\)]+/)
-      if (urlMatch) session.loginUrl = urlMatch[0].replace(/[)\]]+$/, '')
-    }
-  }
-  child.stdout.on('data', append)
-  child.stderr.on('data', append)
-  child.on('error', (err) => {
-    session.error = err.message
-    session.child = null
-  })
-  child.on('close', (code) => {
-    session.exitCode = code
-    session.child = null
-    const tmpGeminiDir = path.join(loginHome, '.gemini')
-    const tmpOauth = path.join(tmpGeminiDir, 'oauth_creds.json')
-    try {
-      if (fs.existsSync(tmpOauth)) {
-        session.backupPath = backupGeminiCliAuth()
-        ensureSecureDir(GEMINI_DIR)
-        for (const name of ['oauth_creds.json', 'google_accounts.json', 'settings.json']) {
-          const src = path.join(tmpGeminiDir, name)
-          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(GEMINI_DIR, name))
-        }
-        if (code !== 0 && !session.error) {
-          session.error = 'Credenciais Gemini salvas, mas o smoke test da CLI terminou com codigo ' + code
-        }
-      }
-    } catch (error) {
-      session.error = 'Login Gemini concluido, mas falhou ao salvar credenciais: ' + error.message
-    }
-    try { fs.rmSync(loginHome, { recursive: true, force: true }) } catch {}
-  })
-  return geminiLoginStatusPayload()
-}
-
-function submitGeminiLoginCode(code) {
-  const clean = String(code || '').trim()
-  if (!clean) {
-    const err = new Error('Informe o codigo de autorizacao do Google')
-    err.statusCode = 400
-    throw err
-  }
-  if (!geminiLoginSession?.child || geminiLoginSession.exitCode !== null || geminiLoginSession.error) {
-    const err = new Error('Nao ha login Gemini aguardando codigo')
-    err.statusCode = 409
-    throw err
-  }
-  try {
-    geminiLoginSession.child.stdin.write(`${clean}\n`)
-  } catch (err) {
-    const e = new Error('Falhou ao enviar codigo: ' + err.message)
-    e.statusCode = 500
-    throw e
-  }
-  return geminiLoginStatusPayload()
-}
-
-function cancelGeminiLoginProcess() {
-  if (geminiLoginSession?.child) {
-    geminiLoginSession.child.kill('SIGTERM')
-    geminiLoginSession.error = 'Login Gemini cancelado pelo usuario'
-    geminiLoginSession.child = null
-  }
-  return geminiLoginStatusPayload()
 }
 
 function readJson(filePath) {
@@ -865,7 +668,7 @@ async function buildDashboardOverview() {
   const projects = await collectProjects()
   const alerts = deriveAlerts({ machines, deepseekPayload: deepseek, projects })
 
-  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { deepseek, gemini: readGeminiOAuthSummary() }, projects, alerts }
+  return { ok: true, checkedAt: new Date().toISOString(), machines, ai: { deepseek }, projects, alerts }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -983,30 +786,6 @@ app.post('/api/admin/login', (req, res) => {
 app.post('/api/admin/logout', (_req, res) => {
   clearSessionCookie(_req, res)
   res.json({ ok: true, authenticated: false })
-})
-
-app.get('/api/gemini-login/status', requireAdmin, (_req, res) => {
-  res.json(geminiLoginStatusPayload())
-})
-
-app.post('/api/gemini-login/start', requireAdmin, requireAdminAction, (_req, res) => {
-  try {
-    res.json(startGeminiLoginProcess())
-  } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
-  }
-})
-
-app.post('/api/gemini-login/submit-code', requireAdmin, requireAdminAction, (req, res) => {
-  try {
-    res.json(submitGeminiLoginCode(req.body?.code))
-  } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message, checkedAt: new Date().toISOString() })
-  }
-})
-
-app.post('/api/gemini-login/cancel', requireAdmin, requireAdminAction, (_req, res) => {
-  res.json(cancelGeminiLoginProcess())
 })
 
 

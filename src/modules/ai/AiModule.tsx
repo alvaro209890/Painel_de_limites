@@ -30,10 +30,6 @@ export function AiModule({ deepseek, loading, error }: AiModuleProps) {
             <p className="text-[10px] font-black uppercase tracking-widest text-emerald-300">Performance</p>
             <p className="mt-1 font-bold text-white">DeepSeek V4</p>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-violet-500/10 p-3 text-center">
-            <p className="text-[10px] font-black uppercase tracking-widest text-violet-300">Contexto</p>
-            <p className="mt-1 font-bold text-white">Gemini 3.1 Pro</p>
-          </div>
         </div>
       </SectionCard>
     </div>
