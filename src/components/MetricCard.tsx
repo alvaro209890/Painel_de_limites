@@ -25,11 +25,11 @@ const neonGlowColor: Record<NonNullable<MetricCardProps['tone']>, string> = {
 export function MetricCard({ label, value, hint, tone = 'default', history = [] }: MetricCardProps) {
   // Generate SVG path for neon historical chart
   const sparklineSvg = (() => {
-    // We always want to render the graph box if history is supported for the metric (i.e. we pass a history prop)
-    if (!history) return null
+    // Check if we have history passed. If history is undefined or empty, do not render a graph wrapper.
+    if (!history || history.length === 0) return null
     
-    const width = 90
-    const height = 28
+    const width = 120
+    const height = 36
     const padding = 2
     
     // Ensure we have at least 2 points to draw a polyline. If not, fallback to a flat placeholder line.
@@ -54,8 +54,8 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
     const strokeColor = neonGlowColor[tone]
 
     return (
-      <div className="relative h-7 w-[90px] shrink-0 self-end opacity-90 transition-opacity hover:opacity-100">
-        <svg className="overflow-visible" width={90} height={height} viewBox={`0 0 90 ${height}`}>
+      <div className="relative h-9 w-[120px] shrink-0 self-end opacity-90 transition-opacity hover:opacity-100 sm:block hidden">
+        <svg className="overflow-visible" width={120} height={height} viewBox={`0 0 120 ${height}`}>
           <defs>
             <filter id={`neon-glow-${tone}`} x="-20%" y="-20%" width="140%" height="140%">
               <feGaussianBlur stdDeviation="1.8" result="blur" />
@@ -80,11 +80,11 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
   })()
 
   return (
-    <div className={`flex justify-between gap-2 rounded-2xl border bg-gradient-to-br p-3.5 shadow-lg shadow-black/10 transition-all hover:scale-[1.01] hover:border-white/20 ${toneClass[tone]}`}>
-      <div className="flex flex-col min-w-0">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
-        <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] truncate">{value}</p>
-        {hint && <p className="mt-1 text-xs text-slate-400 truncate">{hint}</p>}
+    <div className={`flex items-center justify-between gap-4 rounded-2xl border bg-gradient-to-br p-4 sm:p-5 shadow-lg shadow-black/10 transition-all hover:scale-[1.01] hover:border-white/20 ${toneClass[tone]}`}>
+      <div className="flex flex-col min-w-0 flex-1">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{label}</p>
+        <p className="mt-2 text-2xl sm:text-3xl font-bold tracking-[-0.04em] text-white truncate">{value}</p>
+        {hint && <p className="mt-1 text-xs sm:text-sm text-slate-400 truncate" title={hint}>{hint}</p>}
       </div>
       {sparklineSvg}
     </div>
