@@ -188,11 +188,35 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
 
             {isOnline && machine.metrics ? (
               <>
-                <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-                  <MetricCard label="CPU" value={machine.metrics.cpu.usagePercent === null ? '--' : `${machine.metrics.cpu.usagePercent}%`} hint={`${machine.metrics.cpu.cores} núcleos`} tone="cyan" history={machineHistory.cpu} />
-                  <MetricCard label="RAM" value={`${machine.metrics.memory.usedPercent}%`} hint={`${machine.metrics.memory.usedGb}GB / ${machine.metrics.memory.totalGb}GB`} tone={machine.metrics.memory.usedPercent >= 80 ? 'warning' : 'good'} history={machineHistory.ram} />
-                  <MetricCard label="Disco" value={disk?.percent || '--'} hint={disk ? `${disk.label} • ${disk.freeGb}GB livres` : 'Sem disco'} tone={Number(String(disk?.percent || '').replace('%', '')) >= 80 ? 'warning' : 'default'} />
-                  <MetricCard label="Temp." value={machine.metrics.temperature ? `${machine.metrics.temperature.max}°C` : '--'} hint="máxima detectada" tone="default" />
+                <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                  <MetricCard 
+                    label="CPU" 
+                    value={machine.metrics.cpu.usagePercent === null ? '--' : `${machine.metrics.cpu.usagePercent}%`} 
+                    hint={`${machine.metrics.cpu.cores} núcleos`} 
+                    tone="cyan" 
+                    history={machineHistory.cpu} 
+                  />
+                  <MetricCard 
+                    label="RAM" 
+                    value={`${machine.metrics.memory.usedPercent}%`} 
+                    hint={`${machine.metrics.memory.usedGb}GB / ${machine.metrics.memory.totalGb}GB`} 
+                    tone={machine.metrics.memory.usedPercent >= 80 ? 'warning' : 'good'} 
+                    history={machineHistory.ram} 
+                  />
+                  <MetricCard 
+                    label="Disco" 
+                    value={disk?.percent || '--'} 
+                    hint={disk ? `${disk.label} • ${disk.freeGb}GB livres` : 'Sem disco'} 
+                    tone={Number(String(disk?.percent || '').replace('%', '')) >= 80 ? 'warning' : 'default'} 
+                    progress={disk ? Number(String(disk.percent).replace('%', '')) : null}
+                  />
+                  <MetricCard 
+                    label="Temp." 
+                    value={machine.metrics.temperature ? `${machine.metrics.temperature.max}°C` : '--'} 
+                    hint="Temperatura máxima detectada" 
+                    tone={machine.metrics.temperature && machine.metrics.temperature.max >= 70 ? 'danger' : 'default'} 
+                    progress={machine.metrics.temperature ? (machine.metrics.temperature.max / 100) * 100 : null}
+                  />
                 </div>
                 <p className="mt-4 text-xs text-slate-500">Uptime: {formatDuration(machine.metrics.uptime)} • Último sinal: {formatDate(machine.lastSeenAt)}</p>
               </>
