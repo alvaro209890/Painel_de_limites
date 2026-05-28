@@ -942,10 +942,17 @@ function startStaticServer() {
 
   staticApp.use('/api', express.raw({ type: '*/*', limit: '2mb' }), proxyToApi)
 
+  staticApp.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    next()
+  })
+
   staticApp.use(express.static(DIST_DIR, {
     index: 'index.html',
-    maxAge: '1h',
-    etag: true,
+    maxAge: '0',
+    etag: false,
   }))
   staticApp.get(/.*/, (_req, res) => {
     const filePath = path.join(DIST_DIR, 'index.html')
