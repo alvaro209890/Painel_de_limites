@@ -7,7 +7,7 @@ type MetricCardProps = {
 }
 
 const toneClass: Record<NonNullable<MetricCardProps['tone']>, string> = {
-  default: 'from-white/[0.07] to-white/[0.025] text-white',
+  default: 'from-white/[0.07] to-white/[0.025] text-white border-white/10',
   cyan: 'from-indigo-300/15 to-indigo-950/10 text-indigo-100 border-indigo-500/20',
   good: 'from-emerald-300/15 to-emerald-950/10 text-emerald-100 border-emerald-500/20',
   warning: 'from-amber-300/15 to-amber-950/10 text-amber-100 border-amber-500/20',
@@ -28,7 +28,7 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
     // We always want to render the graph box if history is supported for the metric (i.e. we pass a history prop)
     if (!history) return null
     
-    const width = 120
+    const width = 90
     const height = 28
     const padding = 2
     
@@ -54,8 +54,8 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
     const strokeColor = neonGlowColor[tone]
 
     return (
-      <div className="relative h-7 w-[120px] self-end opacity-90 transition-opacity hover:opacity-100">
-        <svg className="overflow-visible" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <div className="relative h-7 w-[90px] shrink-0 self-end opacity-90 transition-opacity hover:opacity-100">
+        <svg className="overflow-visible" width={90} height={height} viewBox={`0 0 90 ${height}`}>
           <defs>
             <filter id={`neon-glow-${tone}`} x="-20%" y="-20%" width="140%" height="140%">
               <feGaussianBlur stdDeviation="1.8" result="blur" />
@@ -80,7 +80,7 @@ export function MetricCard({ label, value, hint, tone = 'default', history = [] 
   })()
 
   return (
-    <div className={`flex justify-between rounded-2xl border bg-gradient-to-br p-4 shadow-lg shadow-black/10 transition-all hover:scale-[1.01] hover:border-white/20 ${toneClass[tone]}`}>
+    <div className={`flex justify-between gap-2 rounded-2xl border bg-gradient-to-br p-3.5 shadow-lg shadow-black/10 transition-all hover:scale-[1.01] hover:border-white/20 ${toneClass[tone]}`}>
       <div className="flex flex-col min-w-0">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
         <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] truncate">{value}</p>

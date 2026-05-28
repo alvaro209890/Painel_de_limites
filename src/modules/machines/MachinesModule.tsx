@@ -188,7 +188,7 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
 
             {isOnline && machine.metrics ? (
               <>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-1 2xl:grid-cols-2">
                   <MetricCard label="CPU" value={machine.metrics.cpu.usagePercent === null ? '--' : `${machine.metrics.cpu.usagePercent}%`} hint={`${machine.metrics.cpu.cores} núcleos`} tone="cyan" history={machineHistory.cpu} />
                   <MetricCard label="RAM" value={`${machine.metrics.memory.usedPercent}%`} hint={`${machine.metrics.memory.usedGb}GB / ${machine.metrics.memory.totalGb}GB`} tone={machine.metrics.memory.usedPercent >= 80 ? 'warning' : 'good'} history={machineHistory.ram} />
                   <MetricCard label="Disco" value={disk?.percent || '--'} hint={disk ? `${disk.label} • ${disk.freeGb}GB livres` : 'Sem disco'} tone={Number(String(disk?.percent || '').replace('%', '')) >= 80 ? 'warning' : 'default'} />
