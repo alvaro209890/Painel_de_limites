@@ -248,7 +248,7 @@ function App() {
     if (!authenticated || tab !== 'machines') return
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void loadMachines()
-    }, 5_000)
+    }, 15_000)
     return () => window.clearInterval(interval)
   }, [authenticated, tab, loadMachines])
 
