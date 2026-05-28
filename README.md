@@ -1,67 +1,74 @@
 # Painel de Limites
 
-Dashboard local para monitoramento DevOps e de maquinas, com foco em:
+Dashboard local para monitoramento DevOps e de máquinas, com foco em:
 
-- Heartbeats de agentes locais e remotos.
-- CPU, RAM, discos, temperatura e uptime.
-- Status de projetos/servicos via PM2 e health checks HTTP.
-- Alertas de maquinas offline, discos quase cheios, projetos fora do ar e saldo baixo.
-- Monitoramento das integracoes DeepSeek e Gemini.
+- **Métricas Neon em Tempo Real (Sparklines em SVG):** Histórico visual dinâmico de 15 pontos em tempo real para monitorar flutuações de CPU e RAM nas suas máquinas conectadas.
+- **Heartbeats:** Sinais vitais de agentes locais e remotos através do `limits-agent`.
+- **Hardware e Telemetria:** CPU, RAM, discos, temperatura e uptime.
+- **Projetos e Processos:** Status de projetos e microsserviços via PM2 e health checks HTTP.
+- **Alertas Inteligentes:** Notificações automáticas para máquinas offline, discos cheios e saldo DeepSeek baixo.
+- **Módulo de Performance:** Monitoramento e consulta ao saldo do **DeepSeek V4**.
 
-## Comandos
+---
+
+## 🛠️ Comandos
 
 ```bash
-npm run dev
-npm run build
-npm run preview
-node server.js
+npm run dev      # Inicia o servidor Vite de desenvolvimento
+npm run build    # Gera a build estática otimizada de produção
+npm run preview  # Faz o preview local da build
+node server.js   # Inicia a API Express e serve o frontend de produção
 ```
 
-## Backend
+---
 
-O `server.js` expoe apenas as rotas necessarias para o painel:
+## 🔌 API e Backend (`server.js`)
 
-| Metodo | Rota | Descricao |
+O backend foi simplificado para focar puramente em monitoramento soberano de infraestrutura. Todas as chamadas obsoletas da Gemini foram eliminadas.
+
+| Método | Rota | Descrição |
 | --- | --- | --- |
-| `GET` | `/api/health` | Health check simples |
-| `GET` | `/api/admin/status` | Status da sessao admin |
-| `POST` | `/api/admin/login` | Login admin |
-| `POST` | `/api/admin/logout` | Logout admin |
-| `GET` | `/api/dashboard` | Payload geral do dashboard |
-| `GET` | `/api/machines` | Lista de maquinas e metricas |
-| `POST` | `/api/machines/:id/rename` | Renomeia uma maquina cadastrada |
-| `POST` | `/api/agent/heartbeat` | Recebe heartbeat do limits-agent |
-| `GET` | `/api/projects` | Status de projetos configurados |
-| `GET` | `/api/alerts` | Alertas derivados do estado atual |
-| `GET` | `/api/pc-metrics` | Metricas locais do servidor |
-| `GET` | `/api/deepseek` | Saldo/disponibilidade DeepSeek |
-| `GET` | `/api/gemini-login/status` | Status OAuth da Gemini CLI |
-| `POST` | `/api/gemini-login/start` | Inicia login Gemini CLI |
-| `POST` | `/api/gemini-login/submit-code` | Envia codigo do device flow Gemini |
-| `POST` | `/api/gemini-login/cancel` | Cancela login Gemini em andamento |
+| `GET` | `/api/health` | Health check básico |
+| `GET` | `/api/admin/status` | Status da sessão do administrador |
+| `POST` | `/api/admin/login` | Login administrativo seguro |
+| `POST` | `/api/admin/logout` | Logout administrativo |
+| `GET` | `/api/dashboard` | Payload unificado do dashboard (PCs, Projetos, DeepSeek e Alertas) |
+| `GET` | `/api/machines` | Lista de máquinas ativas e suas métricas |
+| `POST` | `/api/machines/:id/rename` | Renomeia uma máquina monitorada |
+| `POST` | `/api/agent/heartbeat` | Recebe heartbeat ativo de computadores via `limits-agent` |
+| `GET` | `/api/projects` | Status de projetos e serviços |
+| `GET` | `/api/alerts` | Alertas gerados a partir da análise de estado atual |
+| `GET` | `/api/pc-metrics` | Métricas locais do servidor principal |
+| `GET` | `/api/deepseek` | Saldo e limites de uso do DeepSeek |
 
-## Configuracao
+---
 
-- `LIMITS_PANEL_PORT`: porta da API Express, padrao `8787`.
-- `LIMITS_PANEL_SITE_PORT`: porta do servidor estatico, padrao `4173`.
-- `LIMITS_PANEL_ADMIN_PASSWORD`: senha admin.
-- `LIMITS_PANEL_SESSION_SECRET`: segredo de assinatura da sessao admin.
-- `LIMITS_PANEL_AGENT_SECRET`: bearer token para heartbeats de agentes.
-- `DEEPSEEK_API_KEY`: chave usada para consultar saldo DeepSeek.
+## ⚙️ Configurações e Variáveis de Ambiente
 
-Arquivos locais usados pelo painel:
+As configurações são injetadas em ambiente pelo PM2 ou através do arquivo `.env` local.
 
-- `config/machines.json`: cadastro de maquinas.
-- `config/projects.json`: cadastro de projetos/servicos.
-- `config/admin-secret.json`: fallback local para senha/segredo admin.
-- `config/gemini-agent-secret.json`: segredo opcional para tarefas Gemini internas.
-- `data/agent-heartbeats.json`: ultimos heartbeats recebidos.
-- `data/gemini-backups/`: backups das credenciais Gemini antes de novo login.
+- `LIMITS_PANEL_PORT`: Porta interna para a API Express (Padrão: `8787`).
+- `LIMITS_PANEL_SITE_PORT`: Porta em que o site estático é servido (Padrão: `4173`).
+- `LIMITS_PANEL_ADMIN_PASSWORD`: Senha de login do administrador.
+- `LIMITS_PANEL_SESSION_SECRET`: Assinatura criptográfica segura para tokens de sessão.
+- `LIMITS_PANEL_AGENT_SECRET`: Token de autenticação Bearer para os heartbeats dos agents locais.
+- `DEEPSEEK_API_KEY`: Chave usada para a consulta automatizada do saldo da API DeepSeek.
 
-## Build
+### Arquivos de Configuração Local:
+
+- `config/machines.json`: Cadastro estático de máquinas monitoradas.
+- `config/projects.json`: Cadastro de projetos e rotas de Health Check HTTP.
+- `config/admin-secret.json`: Fallback local para credenciais de administrador.
+- `data/agent-heartbeats.json`: Últimos payloads e estado de hardware enviados pelos PCs atômicos.
+
+---
+
+## ⚡ Geração do Frontend e Deploy
+
+O frontend é construído com **React, Vite e Tailwind CSS** gerando arquivos leves otimizados.
 
 ```bash
 npm run build
 ```
 
-O build gera `dist/`, usado pelo servidor estatico iniciado por `node server.js`.
+Esta operação compila os assets em `dist/`. O servidor Express do painel consome automaticamente esta pasta para servir o painel estático completo de forma ultra-rápida.
