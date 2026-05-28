@@ -74,8 +74,10 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
     })
 
     if (updated || Object.keys(historyStore).length === 0) {
-      setHistoryStore({ ...globalHistory })
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setHistoryStore(JSON.parse(JSON.stringify(globalHistory)))
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machines])
 
   async function handleRename(machineId: string) {
