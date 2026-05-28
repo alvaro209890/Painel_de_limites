@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { MetricCard } from '../../components/MetricCard'
 import { SectionCard } from '../../components/SectionCard'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -30,11 +30,57 @@ function machineMission(machine: DashboardMachine) {
   return machine.notes || 'Máquina monitorada pelo painel.'
 }
 
+// Global metric history store to persist sparkline history inside the module session
+type MetricHistory = {
+  cpu: number[]
+  ram: number[]
+}
+const globalHistory: Record<string, MetricHistory> = {}
+
 export function MachinesModule({ machines, loading, error, onRefresh }: MachinesModuleProps) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [renameBusy, setRenameBusy] = useState(false)
   const [renameError, setRenameError] = useState<string | null>(null)
+
+  // Track metric history (e.g. keeping the last 15 ticks)
+  const [historyStore, setHistoryStore] = useState<Record<string, MetricHistory>>({})
+
+  useEffect(() => {
+    if (!machines || !machines.length) return
+
+    let updated = false
+    machines.forEach((m) => {
+      if (m.status === 'online' && m.metrics) {
+        const key = m.id
+        if (!globalHistory[key]) {
+          globalHistory[key] = { cpu: [], ram: [] }
+        }
+
+        const currentCpu = m.metrics.cpu.usagePercent ?? 0
+        const currentRam = m.metrics.memory.usedPercent
+
+        const h = globalHistory[key]
+        // Avoid duplicates on fast component re-renders
+        const lastCpu = h.cpu[h.cpu.length - 1]
+        const lastRam = h.ram[h.ram.length - 1]
+        
+        if (lastCpu !== currentCpu || lastRam !== currentRam || h.cpu.length === 0) {
+          h.cpu.push(currentCpu)
+          h.ram.push(currentRam)
+
+          // Limit history to 15 ticks
+          if (h.cpu.length > 15) h.cpu.shift()
+          if (h.ram.length > 15) h.ram.shift()
+          updated = true
+        }
+      }
+    })
+
+    if (updated || Object.keys(historyStore).length === 0) {
+      setHistoryStore({ ...globalHistory })
+    }
+  }, [machines])
 
   async function handleRename(machineId: string) {
     if (!editName.trim()) return
@@ -80,6 +126,7 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
         const disk = mainDisk(machine)
         const isOnline = machine.status === 'online'
         const isEditing = editingId === machine.id
+        const machineHistory = historyStore[machine.id] || { cpu: [], ram: [] }
 
         return (
           <SectionCard key={machine.id} className={`min-h-full ${machine.role === 'server' ? 'lg:col-span-2 xl:col-span-1' : ''}`}>
@@ -146,8 +193,8 @@ export function MachinesModule({ machines, loading, error, onRefresh }: Machines
             {isOnline && machine.metrics ? (
               <>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                  <MetricCard label="CPU" value={machine.metrics.cpu.usagePercent === null ? '--' : `${machine.metrics.cpu.usagePercent}%`} hint={`${machine.metrics.cpu.cores} núcleos`} tone="cyan" />
-                  <MetricCard label="RAM" value={`${machine.metrics.memory.usedPercent}%`} hint={`${machine.metrics.memory.usedGb}GB / ${machine.metrics.memory.totalGb}GB`} tone={machine.metrics.memory.usedPercent >= 80 ? 'warning' : 'good'} />
+                  <MetricCard label="CPU" value={machine.metrics.cpu.usagePercent === null ? '--' : `${machine.metrics.cpu.usagePercent}%`} hint={`${machine.metrics.cpu.cores} núcleos`} tone="cyan" history={machineHistory.cpu} />
+                  <MetricCard label="RAM" value={`${machine.metrics.memory.usedPercent}%`} hint={`${machine.metrics.memory.usedGb}GB / ${machine.metrics.memory.totalGb}GB`} tone={machine.metrics.memory.usedPercent >= 80 ? 'warning' : 'good'} history={machineHistory.ram} />
                   <MetricCard label="Disco" value={disk?.percent || '--'} hint={disk ? `${disk.label} • ${disk.freeGb}GB livres` : 'Sem disco'} tone={Number(String(disk?.percent || '').replace('%', '')) >= 80 ? 'warning' : 'default'} />
                   <MetricCard label="Temp." value={machine.metrics.temperature ? `${machine.metrics.temperature.max}°C` : '--'} hint="máxima detectada" tone="default" />
                 </div>
