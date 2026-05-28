@@ -2,24 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { apiFetch } from './api/client'
 import { AlertsModule } from './modules/alerts/AlertsModule'
-import { AiModule } from './modules/ai/AiModule'
 import { MachinesModule } from './modules/machines/MachinesModule'
 import { ProjectsModule } from './modules/projects/ProjectsModule'
 import type { DashboardOverviewPayload, MachinesPayload } from './types/dashboard'
 import { formatDate } from './utils/format'
 
-type TabId = 'machines' | 'ai' | 'projects' | 'alerts'
+type TabId = 'machines' | 'projects' | 'alerts'
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: 'machines', label: 'Máquinas', icon: '💻' },
-  { id: 'ai', label: 'IA', icon: '🧠' },
   { id: 'projects', label: 'Projetos', icon: '🚀' },
   { id: 'alerts', label: 'Alertas', icon: '🚨' },
 ]
 
 function MachineSplitPanel({ dashboard }: { dashboard: DashboardOverviewPayload | null }) {
   const machines = dashboard?.machines || []
-  const deepSeekBalance = dashboard?.ai.deepseek?.balance.balance_infos?.[0]?.total_balance
 
   const machineCards = machines.map((machine) => {
     const agentNames = machine.agents?.length
@@ -54,7 +51,7 @@ function MachineSplitPanel({ dashboard }: { dashboard: DashboardOverviewPayload 
   }
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+    <section className="grid gap-4">
       <div className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-4 shadow-2xl shadow-indigo-950/20 backdrop-blur sm:p-6">
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -82,13 +79,6 @@ function MachineSplitPanel({ dashboard }: { dashboard: DashboardOverviewPayload 
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-        <div className="rounded-[1.5rem] border border-white/10 bg-black/30 p-4 sm:col-span-2 xl:col-span-1">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">DeepSeek API</p>
-          <p className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-white">US$ {deepSeekBalance || '--'}</p>
-          <p className="mt-1 text-sm text-slate-400">provider econômico monitorado pelo painel</p>
-        </div>
-      </div>
     </section>
   )
 }
@@ -272,7 +262,6 @@ function App() {
 
   const moduleContent = (() => {
     if (tab === 'machines') return <MachinesModule machines={dashboard?.machines || []} loading={loadingDashboard} error={dashboardError} onRefresh={loadMachines} />
-    if (tab === 'ai') return <AiModule deepseek={dashboard?.ai.deepseek || null} loading={loadingDashboard} error={dashboardError} />
     if (tab === 'projects') return <ProjectsModule projects={dashboard?.projects || []} loading={loadingDashboard} error={dashboardError} />
     return <AlertsModule alerts={dashboard?.alerts || []} loading={loadingDashboard} error={dashboardError} />
   })()
